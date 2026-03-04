@@ -429,43 +429,78 @@ install_binaries() {
     rm -f "$tmp_zip"
     rm -rf "$tmp_dir"
 
-    # Final check
+    # Final check — build from source for anything still missing
     local still_missing=()
     for bin in "${REQUIRED_BINS[@]}"; do
         [[ -x "$BIN_DIR/$bin" ]] || still_missing+=("$bin")
     done
+
     if [[ ${#still_missing[@]} -gt 0 ]]; then
         warn "Still missing after download: ${still_missing[*]}"
-        echo
-        echo "  Manual options:"
-        echo "  1) Provide a custom download URL base"
-        echo "  2) Provide path to a local directory containing the binaries"
-        echo "  3) Continue anyway (services will fail to start)"
-        prompt bin_choice "Choice" "3"
-        case "$bin_choice" in
-            1)
-                prompt BASE_URL "Base URL" ""
-                for bin in "${still_missing[@]}"; do
-                    info "Downloading $bin..."
-                    wget -q -O "$BIN_DIR/$bin" "${BASE_URL%/}/$bin" && \
-                        chmod +x "$BIN_DIR/$bin" && ok "Installed: $bin" || warn "Failed: $bin"
-                done
-                ;;
-            2)
-                prompt BIN_SRC "Directory path" "/tmp"
-                for bin in "${still_missing[@]}"; do
-                    if [[ -f "$BIN_SRC/$bin" ]]; then
-                        cp "$BIN_SRC/$bin" "$BIN_DIR/$bin"
-                        chmod +x "$BIN_DIR/$bin" && ok "Copied: $bin"
-                    else
-                        warn "Not found: $BIN_SRC/$bin"
-                    fi
-                done
-                ;;
-            3) warn "Continuing — some services may fail" ;;
-        esac
+        info "Attempting to build missing binaries from source..."
+
+        for bin in "${still_missing[@]}"; do
+            case "$bin" in
+                microsocks) build_microsocks ;;
+                *) warn "No source build available for $bin — install it manually to $BIN_DIR/$bin" ;;
+            esac
+        done
+    fi
+
+    # Report final state
+    local final_missing=()
+    for bin in "${REQUIRED_BINS[@]}"; do
+        [[ -x "$BIN_DIR/$bin" ]] || final_missing+=("$bin")
+    done
+    if [[ ${#final_missing[@]} -gt 0 ]]; then
+        warn "Still missing: ${final_missing[*]} — services may fail to start"
     else
         ok "All binaries installed successfully"
+    fi
+}
+
+# ── Build microsocks from source ─────────────────────────────
+build_microsocks() {
+    info "Building microsocks from source..."
+
+    # Need gcc + make
+    if ! command -v gcc &>/dev/null || ! command -v make &>/dev/null; then
+        info "Installing build tools (gcc, make)..."
+        apt-get install -y -q gcc make 2>/dev/null || \
+        yum install -y -q gcc make 2>/dev/null || \
+        { warn "Cannot install gcc/make — microsocks build skipped"; return 1; }
+    fi
+
+    local src_dir="/tmp/microsocks-src"
+    rm -rf "$src_dir"
+
+    # Try git clone first, fall back to downloading single .c file
+    if command -v git &>/dev/null; then
+        git clone -q --depth=1 https://github.com/rofl0r/microsocks "$src_dir" 2>/dev/null
+    fi
+
+    if [[ ! -d "$src_dir" ]]; then
+        mkdir -p "$src_dir"
+        local base="https://raw.githubusercontent.com/rofl0r/microsocks/master"
+        for f in microsocks.c sockssrv.c server.c sblist.c sblist.h server.h; do
+            wget -q -O "$src_dir/$f" "$base/$f" 2>/dev/null || \
+            curl -sfL -o "$src_dir/$f" "$base/$f" 2>/dev/null || true
+        done
+    fi
+
+    (cd "$src_dir" && make -s 2>/dev/null) || \
+    (cd "$src_dir" && gcc -O2 -o microsocks microsocks.c sockssrv.c server.c sblist.c -lpthread 2>/dev/null) || \
+    (cd "$src_dir" && gcc -O2 -o microsocks *.c -lpthread 2>/dev/null)
+
+    if [[ -f "$src_dir/microsocks" ]]; then
+        cp "$src_dir/microsocks" "$BIN_DIR/microsocks"
+        chmod +x "$BIN_DIR/microsocks"
+        rm -rf "$src_dir"
+        ok "microsocks built and installed from source"
+    else
+        warn "microsocks source build failed — try: apt install gcc make git && rerun setup"
+        rm -rf "$src_dir"
+        return 1
     fi
 }
 
