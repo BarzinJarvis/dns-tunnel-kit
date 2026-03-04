@@ -180,30 +180,26 @@ menu_setup() {
     if [[ ! -f "$DNSTT_KEY" ]]; then
         info "Generating dnstt keypair..."
         if [[ -x "$BIN_DIR/dnstt-server" ]]; then
-            cd "$TUN_DIR/dnstt-ssh"
-            "$BIN_DIR/dnstt-server" -gen-key -privkey-file server.key -pubkey-file server.pub 2>/dev/null || \
-                openssl genpkey -algorithm X25519 -out server.key 2>/dev/null && \
-                openssl pkey -in server.key -pubout -out server.pub 2>/dev/null
+            # Use absolute paths — avoid cd + relative path issues
+            if "$BIN_DIR/dnstt-server" \
+                    -gen-key \
+                    -privkey-file "$DNSTT_KEY" \
+                    -pubkey-file  "$DNSTT_PUB"; then
+                chown dnstm:dnstm "$DNSTT_KEY" "$DNSTT_PUB" 2>/dev/null || true
+                chmod 600 "$DNSTT_KEY"
+                ok "dnstt keypair generated"
+            else
+                err "dnstt-server -gen-key failed — check binary is working"
+            fi
         else
-            warn "dnstt-server not found — generating placeholder key with openssl"
-            openssl genpkey -algorithm X25519 -out "$DNSTT_KEY" 2>/dev/null || \
-                dd if=/dev/urandom bs=32 count=1 2>/dev/null | xxd -p > "$DNSTT_KEY"
+            err "dnstt-server not found in $BIN_DIR — install it first"
         fi
-        chown -R dnstm:dnstm "$TUN_DIR/dnstt-ssh/"
-        chmod 600 "$DNSTT_KEY"
-        ok "dnstt keypair: $DNSTT_KEY"
     else
-        ok "dnstt key already exists: $DNSTT_KEY"
+        ok "dnstt key already exists (skipping generation)"
     fi
 
-    # Print pubkey for DNS TXT record
-    if [[ -f "$DNSTT_PUB" ]]; then
-        PUBKEY=$(cat "$DNSTT_PUB" 2>/dev/null | grep -v '^-' | tr -d '\n' || echo "(read key manually)")
-        echo
-        warn "⚠  Add this TXT record to DNS for $DNSTT_DOMAIN:"
-        echo -e "   ${BOLD}$PUBKEY${RESET}"
-        echo
-    fi
+    # Always display the public key (whether newly generated or already existed)
+    show_dnstt_pubkey "$DNSTT_PUB" "$DNSTT_DOMAIN"
 
     # ── Write config.json ───────────────────────────────────
     info "Writing $CFG_FILE..."
@@ -474,6 +470,40 @@ install_binaries() {
 }
 
 # ── Build microsocks from source ─────────────────────────────
+# ── Display dnstt public key ─────────────────────────────────────────────────
+show_dnstt_pubkey() {
+    local pub_file="${1:-$TUN_DIR/dnstt-ssh/server.pub}"
+    local domain="${2:-}"
+
+    echo
+    hr
+    bold "  🔑 dnstt Public Key"
+    hr
+    if [[ ! -f "$pub_file" ]]; then
+        warn "Public key file not found: $pub_file"
+        warn "Run Setup to generate the keypair first."
+        echo
+        return 1
+    fi
+
+    local pubkey
+    pubkey=$(tr -d '[:space:]' < "$pub_file")
+
+    if [[ -z "$pubkey" ]]; then
+        warn "Public key file is empty: $pub_file"
+        return 1
+    fi
+
+    echo -e "${YELLOW}⚠  Add this TXT record to your DNS for${RESET} ${BOLD}${domain}${RESET}:"
+    echo
+    echo -e "  Type : ${BOLD}TXT${RESET}"
+    [[ -n "$domain" ]] && echo -e "  Name : ${BOLD}${domain}.${RESET}"
+    echo -e "  Value: ${GREEN}${BOLD}${pubkey}${RESET}"
+    echo
+    echo -e "  (Also readable at: ${pub_file})"
+    hr
+}
+
 build_microsocks() {
     info "Building microsocks from source..."
 
@@ -637,8 +667,10 @@ menu_manage() {
         echo -e "  ${BOLD}2)${RESET} ■  Stop all services"
         echo -e "  ${BOLD}3)${RESET} ↺  Restart all services"
         echo -e "  ${BOLD}4)${RESET} 🔑 Show credentials"
-        echo -e "  ${BOLD}5)${RESET} 🔑 Change SOCKS5 password"
-        echo -e "  ${BOLD}6)${RESET} 🔑 Change SSH tunnel user password"
+        echo -e "  ${BOLD}5)${RESET} 🔑 Show dnstt public key (for DNS TXT record)"
+        echo -e "  ${BOLD}6)${RESET} 🔑 Change SOCKS5 password"
+        echo -e "  ${BOLD}7)${RESET} 🔑 Change SSH tunnel user password"
+        echo -e "  ${BOLD}8)${RESET} 🔄 Regenerate dnstt keypair"
         echo -e "  ${BOLD}0)${RESET} ← Back"
         hr
         prompt choice "Choose" ""
@@ -647,8 +679,12 @@ menu_manage() {
             2) svc_action stop    ;;
             3) svc_action restart ;;
             4) show_credentials   ;;
-            5) change_socks_pass  ;;
-            6) change_ssh_pass    ;;
+            5) { local d; d=$(grep "^DNSTT_DOMAIN=" "$CFG_DIR/credentials.txt" 2>/dev/null | cut -d= -f2 || echo "");
+                 show_dnstt_pubkey "$TUN_DIR/dnstt-ssh/server.pub" "$d";
+                 read -rp "Press Enter to continue..."; } ;;
+            6) change_socks_pass  ;;
+            7) change_ssh_pass    ;;
+            8) regen_dnstt_keypair ;;
             0) return ;;
             *) warn "Invalid" ;;
         esac
@@ -676,13 +712,10 @@ show_credentials() {
         warn "Run Setup first, or check $CFG_FILE manually."
     fi
 
-    # Also show dnstt pubkey
-    PUB_FILE="$TUN_DIR/dnstt-ssh/server.pub"
-    if [[ -f "$PUB_FILE" ]]; then
-        echo
-        bold "── dnstt public key (add as DNS TXT record) ──"
-        cat "$PUB_FILE"
-    fi
+    # dnstt public key — with full display
+    local saved_domain
+    saved_domain=$(grep "^DNSTT_DOMAIN=" "$CREDS_FILE" 2>/dev/null | cut -d= -f2 || echo "")
+    show_dnstt_pubkey "$TUN_DIR/dnstt-ssh/server.pub" "$saved_domain"
 
     # Show slipstream cert fingerprint
     CERT_FILE="$TUN_DIR/slip-socks/cert.pem"
@@ -694,6 +727,45 @@ show_credentials() {
     fi
 
     echo; read -rp "Press Enter to return..."
+}
+
+regen_dnstt_keypair() {
+    need_root
+    local DNSTT_KEY="$TUN_DIR/dnstt-ssh/server.key"
+    local DNSTT_PUB="$TUN_DIR/dnstt-ssh/server.pub"
+    local domain
+    domain=$(grep "^DNSTT_DOMAIN=" "$CFG_DIR/credentials.txt" 2>/dev/null | cut -d= -f2 || echo "")
+
+    echo
+    warn "This will replace the existing dnstt keypair."
+    warn "You will need to update your DNS TXT record with the new public key."
+    prompt confirm "Continue? (yes/no)" "no"
+    [[ "$confirm" != "yes" ]] && { warn "Aborted."; return; }
+
+    # Backup old keys
+    [[ -f "$DNSTT_KEY" ]] && cp "$DNSTT_KEY" "${DNSTT_KEY}.bak"
+    [[ -f "$DNSTT_PUB" ]] && cp "$DNSTT_PUB" "${DNSTT_PUB}.bak"
+
+    if [[ -x "$BIN_DIR/dnstt-server" ]]; then
+        if "$BIN_DIR/dnstt-server" \
+                -gen-key \
+                -privkey-file "$DNSTT_KEY" \
+                -pubkey-file  "$DNSTT_PUB"; then
+            chown dnstm:dnstm "$DNSTT_KEY" "$DNSTT_PUB" 2>/dev/null || true
+            chmod 600 "$DNSTT_KEY"
+            ok "New dnstt keypair generated"
+            # Restart dnstt service with new key
+            systemctl restart dnstm-dnstt-socks 2>/dev/null && ok "Service restarted" || true
+            show_dnstt_pubkey "$DNSTT_PUB" "$domain"
+        else
+            err "Key generation failed — restoring backup"
+            [[ -f "${DNSTT_KEY}.bak" ]] && mv "${DNSTT_KEY}.bak" "$DNSTT_KEY"
+            [[ -f "${DNSTT_PUB}.bak" ]] && mv "${DNSTT_PUB}.bak" "$DNSTT_PUB"
+        fi
+    else
+        err "dnstt-server binary not found in $BIN_DIR"
+    fi
+    read -rp "Press Enter to continue..."
 }
 
 change_socks_pass() {
