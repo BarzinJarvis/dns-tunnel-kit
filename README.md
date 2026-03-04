@@ -1,98 +1,163 @@
-# DNS Tunnel Kit
+# 🌐 DNS Tunnel Kit
 
-> Bypass DNS-based internet censorship using **DNSTT** and **Slipstream** tunnels — routes all traffic through a SOCKS5 proxy hidden inside DNS traffic.
+Bypass DNS-based internet censorship using **DNSTT** and **Slipstream** tunnels — routes all traffic through an authenticated SOCKS5 proxy hidden inside DNS traffic.
+
+> **Credits:** [github.com/mrvcoder](https://github.com/mrvcoder)
 
 ---
 
-## What's included
+## 📸 Terminal Preview
+
+```
+────────────────────────────────────────────────────────────
+       DNS Tunnel Manager — dnstm + slipstream + dnstt
+       Credits: https://github.com/mrvcoder
+────────────────────────────────────────────────────────────
+  1) 🛠  Setup       — Install & configure everything from scratch
+  2) ✏️  Edit Config  — Modify /etc/dnstm/config.json
+  3) 📊 Status       — View all service states
+  4) ⚙️  Manage       — Start / Stop / Restart + show credentials
+  0) 🚪 Exit
+────────────────────────────────────────────────────────────
+? Choose:
+```
+
+**Status view:**
+```
+────────────────────────────────────────────────────────────
+  📊 Service Status
+────────────────────────────────────────────────────────────
+  ● RUNNING   microsocks
+           Active: active (running) since ...
+           Main PID: 1234
+
+  ● RUNNING   dnstm
+           Active: active (running) since ...
+           Main PID: 1235
+
+  ● RUNNING   dnstm-slip-socks
+           Active: active (running) since ...
+
+  ● RUNNING   dnstm-dnstt-socks
+           Active: active (running) since ...
+
+────────────────────────────────────────────────────────────
+  Listening ports:
+  udp   0.0.0.0:53       dnstm
+  tcp   127.0.0.1:58076  microsocks
+  udp   127.0.0.1:5310   slipstream-server
+  udp   127.0.0.1:5311   dnstt-server
+────────────────────────────────────────────────────────────
+  Config: /etc/dnstm/config.json
+  Listen : 0.0.0.0:53
+  Tunnel : [✓] slip-socks  b.yourdomain.com:5310
+  Tunnel : [✓] dnstt-socks  a.yourdomain.com:5311
+  Route  : slip-socks
+```
+
+---
+
+## 📦 What's Included
 
 | File | Description |
 |------|-------------|
 | `setup.sh` | Interactive setup & management script |
-| `bin/dnstm` | DNS tunnel router — listens on UDP :53, routes to tunnel backends |
-| `bin/dnstt-server` | DNSTT tunnel backend (encodes traffic in DNS TXT records) |
+| `bin/dnstm` | DNS tunnel router — listens on UDP :53 |
+| `bin/dnstt-server` | DNSTT tunnel backend (DNS TXT record encoding) |
 | `bin/slipstream-server` | Slipstream tunnel backend (fake-TLS over DNS) |
 | `bin/microsocks` | Lightweight authenticated SOCKS5 proxy |
 
-All binaries are prebuilt for **Linux x86_64**.
+> All binaries are prebuilt for **Linux x86_64**. The script auto-builds `microsocks` from source if your system is incompatible.
 
 ---
 
-## How it works
+## 🔧 How It Works
 
 ```
-Client (Iran / censored network)
+Client (censored network — Iran, etc.)
     │
     │  DNS queries → port 53
     ▼
-[dnstm — DNS Router :53]
+[dnstm — DNS Router  :53]
     ├── Slipstream queries → slipstream-server :5310 → microsocks :58076
     └── DNSTT queries     → dnstt-server :5311      → microsocks :58076
                                                               │
-                                                     SOCKS5 proxy
-                                                     (your apps connect here)
+                                                    SOCKS5 proxy
+                                               (your apps connect here)
 ```
 
 - **Slipstream** wraps traffic in fake-TLS handshakes inside DNS — hard to fingerprint
-- **DNSTT** encodes traffic in DNS TXT record responses — works through recursive resolvers
+- **DNSTT** encodes traffic as DNS TXT record responses — works through recursive resolvers
 - **microsocks** is the authenticated SOCKS5 endpoint that clients ultimately connect to
+- **dnstm** is the DNS router that dispatches incoming DNS queries to the right tunnel backend
 
 ---
 
-## Quick start
+## 🚀 Quick Start
 
-### Prerequisites
-- Linux server with a public IP
-- A domain you control (to add NS records)
-- Port 53 (UDP) open on your server
+### 1. One-line install
 
-### 1. DNS delegation
+```bash
+wget -O setup.sh https://github.com/BarzinJarvis/dns-tunnel-kit/releases/latest/download/setup.sh
+chmod +x setup.sh
+sudo ./setup.sh
+```
+
+Or clone the full repo (includes prebuilt binaries):
+
+```bash
+git clone https://github.com/BarzinJarvis/dns-tunnel-kit
+cd dns-tunnel-kit
+sudo ./setup.sh
+```
+
+### 2. DNS delegation (required)
 
 Add **NS records** in your DNS provider pointing two subdomains at your server IP:
 
 | Type | Name | Value |
 |------|------|-------|
-| `NS` | `a` (for DNSTT) | `your.server.ip` |
-| `NS` | `b` (for Slipstream) | `your.server.ip` |
+| `NS` | `a` | `your.server.ip` |
+| `NS` | `b` | `your.server.ip` |
 
 So queries for `a.yourdomain.com` and `b.yourdomain.com` reach your server directly.
 
-### 2. Run the setup script
+### 3. Run setup
 
-```bash
-git clone https://github.com/BarzinJarvis/dns-tunnel-kit
-cd dns-tunnel-kit
-chmod +x setup.sh
-sudo ./setup.sh
-```
+The script asks for:
+- Slipstream domain + port (e.g. `b.yourdomain.com`, port `5310`)
+- DNSTT domain + port (e.g. `a.yourdomain.com`, port `5311`)
+- SOCKS5 username + password
+- SSH tunnel username + password
 
-The script will ask for:
-- Your server IP
-- Slipstream domain (e.g. `b.yourdomain.com`)
-- DNSTT domain (e.g. `a.yourdomain.com`)
-- SOCKS5 username & password
-- SSH tunnel user & password
-
-It then installs everything and starts all services as systemd units.
-
----
-
-## Script menu
-
-```
-1. 🔧 Setup   — full installation & configuration
-2. ✏️  Edit    — update domains, ports, credentials, regenerate certs/keys
-3. 📊 Status  — service status, open ports, logs, keys
-4. ⚙️  Manage  → start / stop / restart (all or individual) + show credentials
-```
+Then it **automatically**:
+- Creates `dnstm` system user + SSH tunnel user
+- Downloads & installs all 4 binaries (builds `microsocks` from source if needed)
+- Generates a self-signed TLS cert for Slipstream
+- Generates a DNSTT keypair (shows public key for your DNS TXT record)
+- Writes `/etc/dnstm/config.json`
+- Creates + enables + starts all 4 systemd services
+- Configures `sshd` with a restricted `Match User` block for the tunnel user
+- Saves all credentials to `/etc/dnstm/credentials.txt`
 
 ---
 
-## Client setup (connecting from censored network)
+## ⚙️ Script Menu
+
+```
+1) 🛠  Setup       — full installation & interactive configuration
+2) ✏️  Edit Config  — open config.json in $EDITOR, validate JSON, reload services
+3) 📊 Status       — service states, listening ports, config summary
+4) ⚙️  Manage       — start / stop / restart + show credentials + change passwords
+```
+
+---
+
+## 📱 Client Setup (connecting from censored network)
 
 ### Slipstream (recommended — harder to detect)
 
-Use **SlipNet** Android app or any Slipstream-compatible client:
+Use **SlipNet** Android app:
 - Domain: `b.yourdomain.com`
 - Mode: `SLIPSTREAM_SSH`
 - SSH host: `127.0.0.1:22`
@@ -110,32 +175,33 @@ dnstt-client -udp your.dns.resolver:53 \
   127.0.0.1:1080
 ```
 
-The public key is shown during setup and in `Manage → Show credentials`.
+The public key is shown during setup and in **Manage → Show credentials**.
 
 ---
 
-## Security
+## 🔒 Security
 
-- microsocks requires **username + password** — unauthenticated connections are rejected
-- SSH tunnel user has **no shell, no TTY** — only TCP forwarding allowed
-- All services run as unprivileged users with systemd sandboxing
-- Slipstream uses a self-signed TLS certificate (generated during setup)
+- **microsocks** requires username + password — unauthenticated connections are rejected
+- **SSH tunnel user** has no shell, no TTY — only TCP forwarding is allowed
+- **All services** run as unprivileged `dnstm` system user
+- **Slipstream** uses a self-signed TLS cert generated during setup
+- **Credentials** stored in `/etc/dnstm/credentials.txt` (chmod 600)
 
 ---
 
-## Architecture
+## 🗂 Service Architecture
 
 ```
-systemd services:
+systemd services
   microsocks.service        — SOCKS5 proxy (127.0.0.1:58076, auth required)
+  dnstm.service             — DNS router (0.0.0.0:53 → tunnel backends)
   dnstm-slip-socks.service  — Slipstream server (127.0.0.1:5310 → microsocks)
-  dnstm-dnstt-ssh.service   — DNSTT server (127.0.0.1:5311 → microsocks)
-  dnstm-dnsrouter.service   — DNS router (0.0.0.0:53 → slip/dnstt backends)
+  dnstm-dnstt-socks.service — DNSTT server (127.0.0.1:5311 → microsocks)
 ```
 
 ---
 
-## Binary versions
+## 📋 Binary Versions
 
 | Binary | Version | Source |
 |--------|---------|--------|
@@ -146,7 +212,11 @@ systemd services:
 
 ---
 
-## License
+## 📜 License
 
-Scripts: MIT  
+Scripts: MIT — free to use, modify, and distribute.  
 Bundled binaries retain their original licenses.
+
+---
+
+> **Credits:** [github.com/mrvcoder](https://github.com/mrvcoder)
