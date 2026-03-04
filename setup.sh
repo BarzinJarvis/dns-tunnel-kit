@@ -2,6 +2,8 @@
 # ============================================================
 #  dnstm-setup.sh — DNS Tunnel Manager (dnstm + slipstream + dnstt)
 #  Manages: microsocks, dnstm, slipstream-server, dnstt-server
+#
+#  Credits: https://github.com/mrvcoder
 # ============================================================
 set -euo pipefail
 
@@ -60,6 +62,7 @@ main_menu() {
         clear
         hr
         bold "       DNS Tunnel Manager — dnstm + slipstream + dnstt"
+        echo -e "       ${CYAN}Credits: https://github.com/mrvcoder${RESET}"
         hr
         echo -e "  ${BOLD}1)${RESET} 🛠  Setup       — Install & configure everything from scratch"
         echo -e "  ${BOLD}2)${RESET} ✏️  Edit Config  — Modify /etc/dnstm/config.json"
