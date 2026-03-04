@@ -379,11 +379,22 @@ REQUIRED_BINS=(dnstm dnstt-server slipstream-server microsocks)
 install_binaries() {
     local missing=()
     for bin in "${REQUIRED_BINS[@]}"; do
-        [[ -x "$BIN_DIR/$bin" ]] || missing+=("$bin")
+        if [[ ! -x "$BIN_DIR/$bin" ]]; then
+            missing+=("$bin")
+        else
+            # Binary exists — verify it actually runs (catches glibc version mismatch)
+            "$BIN_DIR/$bin" --help &>/dev/null || \
+            "$BIN_DIR/$bin" -h &>/dev/null || \
+            "$BIN_DIR/$bin" 2>&1 | grep -qi "usage\|listen\|port\|option" || {
+                # binary crashes on startup — treat as missing
+                warn "$bin exists but fails to run (glibc mismatch?) — will reinstall"
+                missing+=("$bin")
+            }
+        fi
     done
 
     if [[ ${#missing[@]} -eq 0 ]]; then
-        ok "All binaries present in $BIN_DIR"; return
+        ok "All binaries present and working in $BIN_DIR"; return
     fi
 
     warn "Missing binaries: ${missing[*]}"
