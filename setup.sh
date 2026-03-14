@@ -406,6 +406,7 @@ WantedBy=multi-user.target
 UNIT
 
     # dnstt server service
+    # Note: dnstt-server uses positional args: DOMAIN UPSTREAMADDR (no -tcp flag)
     cat > /etc/systemd/system/dnstm-dnstt.service << UNIT
 [Unit]
 Description=dnstt DNS Tunnel (${DNSTT_DOMAIN})
@@ -417,7 +418,7 @@ Type=simple
 ExecStart=/usr/local/bin/dnstt-server \\
     -udp 127.0.0.1:${DNSTT_PORT} \\
     -privkey-file ${DNSTT_KEY_DIR}/server.key \\
-    -tcp 127.0.0.1:${SOCKS_NOAUTH_PORT}
+    ${DNSTT_DOMAIN} 127.0.0.1:${SOCKS_NOAUTH_PORT}
 Restart=always
 RestartSec=5
 
@@ -470,10 +471,10 @@ setup_dnstm() {
     {
       "tag": "dnstt-tunnel",
       "enabled": true,
-      "transport": "dnstt",
+      "transport": "forward",
       "domain": "${DNSTT_DOMAIN}",
       "port": ${DNSTT_PORT},
-      "backend": "127.0.0.1:${SOCKS_NOAUTH_PORT}"
+      "forward": { "address": "127.0.0.1:${DNSTT_PORT}" }
     }
   ],
   "route": {
