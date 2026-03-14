@@ -1,222 +1,172 @@
 # 🌐 DNS Tunnel Kit
 
-Bypass DNS-based internet censorship using **DNSTT** and **Slipstream** tunnels — routes all traffic through an authenticated SOCKS5 proxy hidden inside DNS traffic.
+Bypass DNS-based internet censorship using **MasterDnsVPN** and **Slipstream** tunnels — routes all traffic through a SOCKS5 proxy hidden inside DNS queries.
 
 > **Credits:** [github.com/mrvcoder](https://github.com/mrvcoder)
 
 ---
 
-## 📸 Terminal Preview
+## 🔄 What Changed (March 2026)
 
-```
-────────────────────────────────────────────────────────────
-       DNS Tunnel Manager — dnstm + slipstream + dnstt
-       Credits: https://github.com/mrvcoder
-────────────────────────────────────────────────────────────
-  1) 🛠  Setup       — Install & configure everything from scratch
-  2) ✏️  Edit Config  — Modify /etc/dnstm/config.json
-  3) 📊 Status       — View all service states
-  4) ⚙️  Manage       — Start / Stop / Restart + show credentials
-  0) 🚪 Exit
-────────────────────────────────────────────────────────────
-? Choose:
-```
-
-**Status view:**
-```
-────────────────────────────────────────────────────────────
-  📊 Service Status
-────────────────────────────────────────────────────────────
-  ● RUNNING   microsocks
-           Active: active (running) since ...
-           Main PID: 1234
-
-  ● RUNNING   dnstm
-           Active: active (running) since ...
-           Main PID: 1235
-
-  ● RUNNING   dnstm-slip-socks
-           Active: active (running) since ...
-
-  ● RUNNING   dnstm-dnstt-socks
-           Active: active (running) since ...
-
-────────────────────────────────────────────────────────────
-  Listening ports:
-  udp   0.0.0.0:53       dnstm
-  tcp   127.0.0.1:58076  microsocks
-  udp   127.0.0.1:5310   slipstream-server
-  udp   127.0.0.1:5311   dnstt-server
-────────────────────────────────────────────────────────────
-  Config: /etc/dnstm/config.json
-  Listen : 0.0.0.0:53
-  Tunnel : [✓] slip-socks  b.yourdomain.com:5310
-  Tunnel : [✓] dnstt-socks  a.yourdomain.com:5311
-  Route  : slip-socks
-```
+| Component | Before | After |
+|---|---|---|
+| DNS Tunnel (`a.barzin.biz`) | dnstt / NoizDNS | **MasterDnsVPN** |
+| SOCKS5 on that tunnel | separate microsocks | **built-in** (no extra process) |
+| Encryption | none | **ChaCha20** |
+| Slipstream (`b.barzin.biz`) | unchanged ✅ | unchanged ✅ |
 
 ---
 
-## 📦 What's Included
+## 🏗 Architecture
 
-| File | Description |
-|------|-------------|
-| `setup.sh` | Interactive setup & management script |
-| `bin/dnstm` | DNS tunnel router — listens on UDP :53 |
-| `bin/dnstt-server` | DNSTT tunnel backend (DNS TXT record encoding) |
-| `bin/slipstream-server` | Slipstream tunnel backend (fake-TLS over DNS) |
-| `bin/microsocks` | Lightweight authenticated SOCKS5 proxy |
+```
+                            ┌─────────────────────────────────┐
+                            │     Frankfurt Server            │
+                            │     138.124.115.113             │
+  Client (Iran)             │                                 │
+  ────────────              │  dnstm (DNS Router) :53         │
+  SlipNet / MasterDnsVPN    │     ├─ a.barzin.biz ──▶ MasterDnsVPN :5312  (ChaCha20 + SOCKS5)
+      │                     │     └─ b.barzin.biz ──▶ Slipstream   :5310  ──▶ microsocks :58077
+      │ DNS queries          │                                 │
+      └────────────────────▶│ UDP :53                         │
+                            └─────────────────────────────────┘
+```
 
-> All binaries are prebuilt for **Linux x86_64**. The script auto-builds `microsocks` from source if your system is incompatible.
+Two tunnels, one domain per tunnel:
+
+| Tunnel | Domain | Protocol | SOCKS5 |
+|---|---|---|---|
+| **MasterDnsVPN** | `a.barzin.biz` | DNS + ChaCha20 ARQ | built-in |
+| **Slipstream** | `b.barzin.biz` | DNS → SSH → SOCKS5 | microsocks `:58077` |
 
 ---
 
-## 🔧 How It Works
+## 📦 Included Binaries (`bin/`)
 
-```
-Client (censored network — Iran, etc.)
-    │
-    │  DNS queries → port 53
-    ▼
-[dnstm — DNS Router  :53]
-    ├── Slipstream queries → slipstream-server :5310 → microsocks :58076
-    └── DNSTT queries     → dnstt-server :5311      → microsocks :58076
-                                                              │
-                                                    SOCKS5 proxy
-                                               (your apps connect here)
-```
+| Binary | Purpose |
+|---|---|
+| `dnstm` | DNS traffic multiplexer — routes per-domain to each tunnel |
+| `microsocks` | Lightweight SOCKS5 server — used by Slipstream backend |
+| `slipstream-server` | Slipstream DNS tunnel server |
 
-- **Slipstream** wraps traffic in fake-TLS handshakes inside DNS — hard to fingerprint
-- **DNSTT** encodes traffic as DNS TXT record responses — works through recursive resolvers
-- **microsocks** is the authenticated SOCKS5 endpoint that clients ultimately connect to
-- **dnstm** is the DNS router that dispatches incoming DNS queries to the right tunnel backend
+> **MasterDnsVPN** is **not** bundled — `setup.sh` downloads the latest release automatically from  
+> https://github.com/masterking32/MasterDnsVPN/releases/latest
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. One-line install
+### Server Setup (Frankfurt VPS)
 
 ```bash
-wget -O setup.sh https://github.com/BarzinJarvis/dns-tunnel-kit/releases/latest/download/setup.sh
-chmod +x setup.sh
-sudo ./setup.sh
-```
-
-Or clone the full repo (includes prebuilt binaries):
-
-```bash
+# Clone
 git clone https://github.com/BarzinJarvis/dns-tunnel-kit
 cd dns-tunnel-kit
-sudo ./setup.sh
+
+# Copy binaries
+sudo cp bin/* /usr/local/bin/
+sudo chmod +x /usr/local/bin/{dnstm,microsocks,slipstream-server}
+
+# Full install (downloads MasterDnsVPN, configures dnstm, creates systemd services)
+sudo bash setup.sh install
 ```
 
-### 2. DNS delegation (required)
-
-Add **NS records** in your DNS provider pointing two subdomains at your server IP:
-
-| Type | Name | Value |
-|------|------|-------|
-| `NS` | `a` | `your.server.ip` |
-| `NS` | `b` | `your.server.ip` |
-
-So queries for `a.yourdomain.com` and `b.yourdomain.com` reach your server directly.
-
-### 3. Run setup
-
-The script asks for:
-- Slipstream domain + port (e.g. `b.yourdomain.com`, port `5310`)
-- DNSTT domain + port (e.g. `a.yourdomain.com`, port `5311`)
-- SOCKS5 username + password
-- SSH tunnel username + password
-
-Then it **automatically**:
-- Creates `dnstm` system user + SSH tunnel user
-- Downloads & installs all 4 binaries (builds `microsocks` from source if needed)
-- Generates a self-signed TLS cert for Slipstream
-- Generates a DNSTT keypair (shows public key for your DNS TXT record)
-- Writes `/etc/dnstm/config.json`
-- Creates + enables + starts all 4 systemd services
-- Configures `sshd` with a restricted `Match User` block for the tunnel user
-- Saves all credentials to `/etc/dnstm/credentials.txt`
-
----
-
-## ⚙️ Script Menu
-
-```
-1) 🛠  Setup       — full installation & interactive configuration
-2) ✏️  Edit Config  — open config.json in $EDITOR, validate JSON, reload services
-3) 📊 Status       — service states, listening ports, config summary
-4) ⚙️  Manage       — start / stop / restart + show credentials + change passwords
-```
-
----
-
-## 📱 Client Setup (connecting from censored network)
-
-### Slipstream (recommended — harder to detect)
-
-Use **SlipNet** Android app:
-- Domain: `b.yourdomain.com`
-- Mode: `SLIPSTREAM_SSH`
-- SSH host: `127.0.0.1:22`
-- SSH user/pass: the tunnel user credentials from setup
-- SOCKS5 output on: `0.0.0.0:1080`
-
-### DNSTT
-
-Use the [dnstt client](https://www.bamsoftware.com/software/dnstt/):
+### Migrate Existing Server (from NoizDNS/dnstt)
 
 ```bash
-dnstt-client -udp your.dns.resolver:53 \
-  -pubkey <PUBLIC_KEY_FROM_SETUP> \
-  a.yourdomain.com \
-  127.0.0.1:1080
+sudo bash setup.sh masterdnsvpn-migrate
 ```
 
-The public key is shown during setup and in **Manage → Show credentials**.
+This will:
+1. Download & install MasterDnsVPN
+2. Stop and disable `dnstm-dnstt-ssh` + `microsocks-noauth`
+3. Update dnstm config to forward `a.barzin.biz` → MasterDnsVPN
+4. Print client config (including the encryption key)
 
 ---
 
-## 🔒 Security
-
-- **microsocks** requires username + password — unauthenticated connections are rejected
-- **SSH tunnel user** has no shell, no TTY — only TCP forwarding is allowed
-- **All services** run as unprivileged `dnstm` system user
-- **Slipstream** uses a self-signed TLS cert generated during setup
-- **Credentials** stored in `/etc/dnstm/credentials.txt` (chmod 600)
-
----
-
-## 🗂 Service Architecture
+## 🛠 Modes
 
 ```
-systemd services
-  microsocks.service        — SOCKS5 proxy (127.0.0.1:58076, auth required)
-  dnstm.service             — DNS router (0.0.0.0:53 → tunnel backends)
-  dnstm-slip-socks.service  — Slipstream server (127.0.0.1:5310 → microsocks)
-  dnstm-dnstt-socks.service — DNSTT server (127.0.0.1:5311 → microsocks)
+setup.sh install               Full install (MasterDnsVPN + Slipstream + dnstm)
+setup.sh masterdnsvpn          Install/reinstall MasterDnsVPN only
+setup.sh masterdnsvpn-migrate  Migrate from NoizDNS/dnstt → MasterDnsVPN
+setup.sh masterdnsvpn-update   Update MasterDnsVPN binary to latest release
+setup.sh status                Show all tunnel service status
+setup.sh middle-proxy          Set up Iranian middle-proxy VPS (dnsmasq)
+setup.sh client-config         Print MasterDnsVPN client config
 ```
 
 ---
 
-## 📋 Binary Versions
+## 📱 Client Setup
 
-| Binary | Version | Source |
-|--------|---------|--------|
-| `dnstt-server` | latest | [bamsoftware.com/software/dnstt](https://www.bamsoftware.com/software/dnstt/) |
-| `microsocks` | latest | [github.com/rofl0r/microsocks](https://github.com/rofl0r/microsocks) |
-| `slipstream-server` | — | bundled |
-| `dnstm` | v0.6.7 | bundled |
+### MasterDnsVPN (`a.barzin.biz`)
+
+1. Download the client from [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases/latest)
+2. Get your `ENCRYPT_KEY` from the server:
+   ```bash
+   cat /opt/masterdnsvpn/encrypt_key.txt
+   ```
+3. Create `client_config.toml`:
+   ```toml
+   SOCKS5_HOST = "127.0.0.1"
+   SOCKS5_PORT = 1080
+
+   DOMAINS = ["a.barzin.biz"]
+   DATA_ENCRYPTION_METHOD = 2   # ChaCha20
+   ENCRYPT_KEY = "<your-key-here>"
+
+   ARQ_WINDOW_SIZE = 256
+   ARQ_INITIAL_RTO = 0.4
+   ARQ_MAX_RTO     = 1.2
+
+   PROTOCOL_TYPE = "SOCKS5"
+   LOG_LEVEL     = "INFO"
+   ```
+4. Run: `./MasterDnsVPN_Client --scan` (find best resolvers), then `./MasterDnsVPN_Client`
+5. SOCKS5 proxy at `127.0.0.1:1080`
+
+### Slipstream (`b.barzin.biz`)
+
+Use [SlipNet Android app](https://github.com/BarzinJarvis/SlipNet) with profile type `SLIPSTREAM_SSH`.
 
 ---
 
-## 📜 License
+## 🔧 Services
 
-Scripts: MIT — free to use, modify, and distribute.  
-Bundled binaries retain their original licenses.
+| Service | Purpose | Status |
+|---|---|---|
+| `masterdnsvpn.service` | MasterDnsVPN DNS tunnel | ✅ Active |
+| `dnstm-dnsrouter.service` | DNS traffic router on :53 | ✅ Active |
+| `dnstm-slip-socks.service` | Slipstream tunnel | ✅ Active |
+| `microsocks.service` | SOCKS5 for Slipstream | ✅ Active |
+| `microsocks-slip-public.service` | Public SOCKS5 for Slipstream | ✅ Active |
+| `dnstm-dnstt-ssh.service` | NoizDNS/dnstt (legacy) | ❌ Retired |
+| `microsocks-noauth.service` | No-auth microsocks (legacy) | ❌ Retired |
 
 ---
 
-> **Credits:** [github.com/mrvcoder](https://github.com/mrvcoder)
+## ✅ Check Status
+
+```bash
+sudo bash setup.sh status
+```
+
+---
+
+## 🌍 Middle Proxy (Iranian VPS)
+
+If your users need a local DNS relay inside Iran:
+
+```bash
+sudo bash setup.sh middle-proxy
+```
+
+Installs `dnsmasq` forwarding rules for `a.barzin.biz` and `b.barzin.biz` to public resolvers.
+
+---
+
+## 📄 License
+
+MIT
