@@ -1,43 +1,31 @@
 # 🌐 DNS Tunnel Kit
 
-Bypass DNS-based internet censorship using **MasterDnsVPN** and **Slipstream** tunnels — routes all traffic through a SOCKS5 proxy hidden inside DNS queries.
+Bypass DNS-based internet censorship using **three independent DNS tunnel methods** — MasterDnsVPN, Slipstream, and dnstt — all managed by a single setup script.
 
 > **Credits:** [github.com/mrvcoder](https://github.com/mrvcoder)
-
----
-
-## 🔄 What Changed (March 2026)
-
-| Component | Before | After |
-|---|---|---|
-| DNS Tunnel (`a.barzin.biz`) | dnstt / NoizDNS | **MasterDnsVPN** |
-| SOCKS5 on that tunnel | separate microsocks | **built-in** (no extra process) |
-| Encryption | none | **ChaCha20** |
-| Slipstream (`b.barzin.biz`) | unchanged ✅ | unchanged ✅ |
 
 ---
 
 ## 🏗 Architecture
 
 ```
-                            ┌─────────────────────────────────┐
-                            │     Frankfurt Server            │
-                            │     138.124.115.113             │
-  Client (Iran)             │                                 │
-  ────────────              │  dnstm (DNS Router) :53         │
-  SlipNet / MasterDnsVPN    │     ├─ a.barzin.biz ──▶ MasterDnsVPN :5312  (ChaCha20 + SOCKS5)
-      │                     │     └─ b.barzin.biz ──▶ Slipstream   :5310  ──▶ microsocks :58077
-      │ DNS queries          │                                 │
-      └────────────────────▶│ UDP :53                         │
-                            └─────────────────────────────────┘
+                            ┌─────────────────────────────────────┐
+  Client (Iran)             │  Frankfurt Server :53               │
+  ─────────────             │                                     │
+  MasterDnsVPN client  ───▶ │  dnstm DNS Router                   │
+  SlipNet (Slipstream) ───▶ │    ├─ a.barzin.biz → MasterDnsVPN :5312  (ChaCha20 + SOCKS5)
+  dnstt-client         ───▶ │    ├─ b.barzin.biz → Slipstream   :5310  → microsocks :58077
+                            │    └─ c.barzin.biz → dnstt        :5311  → microsocks :58078
+                            └─────────────────────────────────────┘
 ```
 
-Two tunnels, one domain per tunnel:
+| Tunnel | Domain | Protocol | Encryption | SOCKS5 |
+|---|---|---|---|---|
+| **MasterDnsVPN** | `a.barzin.biz` | Custom DNS + ARQ | ChaCha20 | built-in |
+| **Slipstream** | `b.barzin.biz` | DNS → SSH | via SSH | microsocks (auth) |
+| **dnstt** | `c.barzin.biz` | DNS TXT encoding | none | microsocks (no-auth) |
 
-| Tunnel | Domain | Protocol | SOCKS5 |
-|---|---|---|---|
-| **MasterDnsVPN** | `a.barzin.biz` | DNS + ChaCha20 ARQ | built-in |
-| **Slipstream** | `b.barzin.biz` | DNS → SSH → SOCKS5 | microsocks `:58077` |
+All three run simultaneously on the same server, each on a different subdomain.
 
 ---
 
@@ -45,105 +33,139 @@ Two tunnels, one domain per tunnel:
 
 | Binary | Purpose |
 |---|---|
-| `dnstm` | DNS traffic multiplexer — routes per-domain to each tunnel |
-| `microsocks` | Lightweight SOCKS5 server — used by Slipstream backend |
+| `dnstm` | DNS traffic multiplexer — routes per-domain to the right tunnel |
 | `slipstream-server` | Slipstream DNS tunnel server |
+| `dnstt-server` | dnstt DNS tunnel server |
+| `microsocks` | Lightweight SOCKS5 server (Slipstream + dnstt backends) |
 
-> **MasterDnsVPN** is **not** bundled — `setup.sh` downloads the latest release automatically from  
-> https://github.com/masterking32/MasterDnsVPN/releases/latest
+> **MasterDnsVPN** is not bundled — `setup.sh` downloads the latest release automatically from  
+> [github.com/masterking32/MasterDnsVPN/releases](https://github.com/masterking32/MasterDnsVPN/releases/latest)
 
 ---
 
 ## 🚀 Quick Start
 
-### Server Setup (Frankfurt VPS)
+### Full Server Setup
 
 ```bash
-# Clone
 git clone https://github.com/BarzinJarvis/dns-tunnel-kit
 cd dns-tunnel-kit
 
-# Copy binaries
-sudo cp bin/* /usr/local/bin/
-sudo chmod +x /usr/local/bin/{dnstm,microsocks,slipstream-server}
-
-# Full install (downloads MasterDnsVPN, configures dnstm, creates systemd services)
+# Install everything: MasterDnsVPN + Slipstream + dnstt + dnstm router
 sudo bash setup.sh install
 ```
 
-### Migrate Existing Server (from NoizDNS/dnstt)
+### Individual Tunnels
 
 ```bash
-sudo bash setup.sh masterdnsvpn-migrate
+sudo bash setup.sh masterdnsvpn   # MasterDnsVPN only
+sudo bash setup.sh slipstream     # Slipstream only
+sudo bash setup.sh dnstt          # dnstt only
+sudo bash setup.sh dnstm          # dnstm DNS router only
 ```
 
-This will:
-1. Download & install MasterDnsVPN
-2. Stop and disable `dnstm-dnstt-ssh` + `microsocks-noauth`
-3. Update dnstm config to forward `a.barzin.biz` → MasterDnsVPN
-4. Print client config (including the encryption key)
+### Custom Domains
+
+Override domains via environment variables:
+
+```bash
+sudo MDNS_DOMAIN=tunnel1.example.com \
+     SLIP_DOMAIN=tunnel2.example.com \
+     DNSTT_DOMAIN=tunnel3.example.com \
+     bash setup.sh install
+```
 
 ---
 
-## 🛠 Modes
+## 🛠 All Modes
 
 ```
-setup.sh install               Full install (MasterDnsVPN + Slipstream + dnstm)
-setup.sh masterdnsvpn          Install/reinstall MasterDnsVPN only
-setup.sh masterdnsvpn-migrate  Migrate from NoizDNS/dnstt → MasterDnsVPN
-setup.sh masterdnsvpn-update   Update MasterDnsVPN binary to latest release
-setup.sh status                Show all tunnel service status
-setup.sh middle-proxy          Set up Iranian middle-proxy VPS (dnsmasq)
-setup.sh client-config         Print MasterDnsVPN client config
+setup.sh install         Full setup (all three tunnels + dnstm router)
+setup.sh masterdnsvpn    Install / update MasterDnsVPN only
+setup.sh slipstream      Install Slipstream only
+setup.sh dnstt           Install dnstt only
+setup.sh dnstm           Install dnstm DNS router only
+setup.sh client-config   Print client configs for all three tunnels
+setup.sh status          Show all service status
+setup.sh middle-proxy    Set up Iranian VPS DNS multiplexer (dnsmasq)
 ```
 
 ---
 
 ## 📱 Client Setup
 
-### MasterDnsVPN (`a.barzin.biz`)
+### 🔵 MasterDnsVPN (`a.barzin.biz`)
 
-1. Download the client from [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases/latest)
-2. Get your `ENCRYPT_KEY` from the server:
-   ```bash
-   cat /opt/masterdnsvpn/encrypt_key.txt
-   ```
+1. Download client: [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases/latest)
+2. Get your encryption key from the server: `cat /opt/masterdnsvpn/encrypt_key.txt`
 3. Create `client_config.toml`:
-   ```toml
-   SOCKS5_HOST = "127.0.0.1"
-   SOCKS5_PORT = 1080
 
-   DOMAINS = ["a.barzin.biz"]
-   DATA_ENCRYPTION_METHOD = 2   # ChaCha20
-   ENCRYPT_KEY = "<your-key-here>"
+```toml
+SOCKS5_HOST = "127.0.0.1"
+SOCKS5_PORT = 1080
 
-   ARQ_WINDOW_SIZE = 256
-   ARQ_INITIAL_RTO = 0.4
-   ARQ_MAX_RTO     = 1.2
+DOMAINS = ["a.barzin.biz"]
+DATA_ENCRYPTION_METHOD = 2   # 2 = ChaCha20
+ENCRYPT_KEY = "<your-key>"
 
-   PROTOCOL_TYPE = "SOCKS5"
-   LOG_LEVEL     = "INFO"
-   ```
-4. Run: `./MasterDnsVPN_Client --scan` (find best resolvers), then `./MasterDnsVPN_Client`
+ARQ_WINDOW_SIZE = 256
+ARQ_INITIAL_RTO = 0.4
+ARQ_MAX_RTO     = 1.2
+
+PROTOCOL_TYPE = "SOCKS5"
+LOG_LEVEL     = "INFO"
+```
+
+4. Scan for best DNS resolvers, then start:
+```bash
+./MasterDnsVPN_Client --scan
+./MasterDnsVPN_Client
+```
+
 5. SOCKS5 proxy at `127.0.0.1:1080`
 
-### Slipstream (`b.barzin.biz`)
+---
 
-Use [SlipNet Android app](https://github.com/BarzinJarvis/SlipNet) with profile type `SLIPSTREAM_SSH`.
+### 🟢 Slipstream (`b.barzin.biz`)
+
+Use [SlipNet Android app](https://github.com/BarzinJarvis/SlipNet) with profile:
+
+| Setting | Value |
+|---|---|
+| Type | `SLIPSTREAM_SSH` |
+| Domain | `b.barzin.biz` |
+| Cert | copy `/etc/dnstm/tunnels/slip-socks/cert.pem` from server |
+
+---
+
+### 🟡 dnstt (`c.barzin.biz`)
+
+Compatible clients: `dnstt-client`, NoizDNS client, SlipNet (NoizDNS profile type).
+
+1. Get pubkey from server: `cat /opt/dnstt/server.pub`
+2. Run dnstt-client:
+
+```bash
+./dnstt-client \
+  -doh https://dns.google/dns-query \
+  -pubkey-file server.pub \
+  c.barzin.biz 127.0.0.1:1080
+```
+
+3. SOCKS5 proxy at `127.0.0.1:1080` (no auth required)
 
 ---
 
 ## 🔧 Services
 
-| Service | Purpose | Status |
+| Service | Tunnel | Port |
 |---|---|---|
-| `masterdnsvpn.service` | MasterDnsVPN DNS tunnel | ✅ Active |
-| `dnstm-dnsrouter.service` | DNS traffic router on :53 | ✅ Active |
-| `dnstm-slip-socks.service` | Slipstream tunnel | ✅ Active |
-| `microsocks.service` | SOCKS5 for Slipstream | ✅ Active |
-| `microsocks-slip-public.service` | Public SOCKS5 for Slipstream | ✅ Active |
-| `dnstm-dnstt-ssh.service` | NoizDNS/dnstt (legacy) | ❌ Retired |
-| `microsocks-noauth.service` | No-auth microsocks (legacy) | ❌ Retired |
+| `masterdnsvpn.service` | MasterDnsVPN | UDP 5312 (internal) |
+| `dnstm-slip-socks.service` | Slipstream | UDP 5310 (internal) |
+| `microsocks-slip.service` | Slipstream SOCKS5 backend | TCP 58077 |
+| `dnstm-dnstt.service` | dnstt | UDP 5311 (internal) |
+| `microsocks-noauth.service` | dnstt SOCKS5 backend | TCP 58078 |
+| `dnstm-dnsrouter.service` | DNS Router (all tunnels) | UDP 53 |
 
 ---
 
@@ -157,13 +179,31 @@ sudo bash setup.sh status
 
 ## 🌍 Middle Proxy (Iranian VPS)
 
-If your users need a local DNS relay inside Iran:
+For users inside Iran who need a local DNS relay:
 
 ```bash
 sudo bash setup.sh middle-proxy
 ```
 
-Installs `dnsmasq` forwarding rules for `a.barzin.biz` and `b.barzin.biz` to public resolvers.
+Installs `dnsmasq` rules forwarding all three tunnel domains to public DNS resolvers. Point clients' DNS to this VPS IP.
+
+---
+
+## 📋 DNS Delegation
+
+Each tunnel domain needs NS records pointing to the Frankfurt server.  
+Add these DNS records at your registrar / Cloudflare:
+
+```
+a.barzin.biz  NS  ns1.a.barzin.biz
+ns1.a.barzin.biz  A  138.124.115.113
+
+b.barzin.biz  NS  ns1.b.barzin.biz
+ns1.b.barzin.biz  A  138.124.115.113
+
+c.barzin.biz  NS  ns1.c.barzin.biz
+ns1.c.barzin.biz  A  138.124.115.113
+```
 
 ---
 

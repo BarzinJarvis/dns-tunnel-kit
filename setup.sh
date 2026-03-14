@@ -1,66 +1,75 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Barzin Tunnel Infrastructure Setup Script
-#  Updated: 2026-03-14  — MasterDnsVPN replaces NoizDNS/dnstt
+#  DNS Tunnel Kit — Multi-Tunnel Setup Script
+#  Supports: MasterDnsVPN + Slipstream + dnstt
+#  Credits : https://github.com/mrvcoder
 # ============================================================
 #
 #  Modes:
-#    install           — Full Frankfurt server setup
-#                         (MasterDnsVPN + Slipstream + dnstm)
-#    masterdnsvpn      — Install / reinstall MasterDnsVPN only
-#    masterdnsvpn-migrate — Migrate from NoizDNS/dnstt to MasterDnsVPN
-#    slipstream        — Set up Slipstream only
-#    status            — Show current tunnel service status
+#    install           — Full setup (all three tunnels + dnstm)
+#    masterdnsvpn      — Install / update MasterDnsVPN only
+#    slipstream        — Install Slipstream only
+#    dnstt             — Install dnstt only
+#    status            — Show all tunnel service status
+#    client-config     — Print client configs for all tunnels
 #    middle-proxy      — Iranian VPS: dnsmasq DNS multiplexer
 #
-#  Architecture (Frankfurt server 138.124.115.113):
-#    dnstm router → UDP :53
-#      ├─ a.barzin.biz  → forward  → MasterDnsVPN  :5312 (SOCKS5 built-in)
-#      └─ b.barzin.biz  → slipstream→ microsocks   :58077 (public SOCKS5)
+#  Architecture (server):
+#    dnstm DNS router → UDP :53
+#      ├─ a.barzin.biz  → forward  → MasterDnsVPN   :5312  (built-in SOCKS5 + ChaCha20)
+#      ├─ b.barzin.biz  → slipstream → microsocks    :58077 (auth SOCKS5)
+#      └─ c.barzin.biz  → dnstt    → microsocks-noauth :58078 (no-auth SOCKS5)
 #
-#  MasterDnsVPN details:
-#    Binary  : /opt/masterdnsvpn/MasterDnsVPN_Server
-#    Config  : /opt/masterdnsvpn/server_config.toml
-#    Key     : /opt/masterdnsvpn/encrypt_key.txt
-#    Service : masterdnsvpn.service
-#    Port    : UDP 5312 (behind dnstm, never exposed directly)
+#  MasterDnsVPN:
 #    Domain  : a.barzin.biz
+#    Port    : UDP 5312 (internal, behind dnstm)
 #    Encryption: ChaCha20 (method 2)
-#    Protocol  : SOCKS5 (built-in, no external microsocks needed)
+#    SOCKS5  : built-in — no external microsocks needed
+#    Binary  : downloaded from GitHub releases on install
 #
-#  Slipstream details (unchanged):
+#  Slipstream:
 #    Domain  : b.barzin.biz
-#    Port    : 5310 (behind dnstm)
-#    Backend : microsocks on :58077 (user: barzin / FFbCXFUlIwmjOBG!I5)
+#    Port    : 5310 (internal, behind dnstm)
+#    SOCKS5  : microsocks :58077 (auth: see SOCKS_USER/SOCKS_PASS)
 #
-#  NoizDNS / dnstt:  *** DEPRECATED — replaced by MasterDnsVPN ***
-#    Old domain: a.barzin.biz (same NS delegation reused)
-#    Old port  : 5311
+#  dnstt:
+#    Domain  : c.barzin.biz
+#    Port    : 5311 (internal, behind dnstm)
+#    SOCKS5  : microsocks-noauth :58078 (no-auth)
+#    Keys    : /opt/dnstt/server.key + server.pub
 # ============================================================
 
 set -euo pipefail
 
 # ─── Config ─────────────────────────────────────────────────
 SERVER_IP="138.124.115.113"
-MDNS_DOMAIN="a.barzin.biz"          # MasterDnsVPN domain (reuses NoizDNS NS delegation)
-SLIP_DOMAIN="b.barzin.biz"          # Slipstream domain (unchanged)
 
+# MasterDnsVPN
+MDNS_DOMAIN="${MDNS_DOMAIN:-a.barzin.biz}"
 MDNS_INSTALL_DIR="/opt/masterdnsvpn"
-MDNS_PORT="5312"                    # Internal port behind dnstm forward transport
-MDNS_ENCRYPTION="2"                 # 2=ChaCha20 (fast + secure)
-MDNS_PROTOCOL="SOCKS5"              # Built-in SOCKS5 (no microsocks needed)
+MDNS_PORT="5312"
+MDNS_ENCRYPTION="2"                  # 2=ChaCha20
 
+# Slipstream
+SLIP_DOMAIN="${SLIP_DOMAIN:-b.barzin.biz}"
+SLIP_CERT_DIR="/etc/dnstm/tunnels/slip-socks"
+SLIP_PORT="5310"
+
+# dnstt
+DNSTT_DOMAIN="${DNSTT_DOMAIN:-c.barzin.biz}"
+DNSTT_PORT="5311"
+DNSTT_KEY_DIR="/opt/dnstt"
+
+# Shared SOCKS5 (Slipstream backend)
 SOCKS_USER="barzin"
-SOCKS_PASS="FFbCXFUlIwmjOBG\!I5"
-SOCKS_PORT="58076"
-PUB_SOCKS_PORT="58077"
-DNSTT_PORT="5311"                   # Legacy NoizDNS port (will be stopped)
+SOCKS_PASS='FFbCXFUlIwmjOBG!I5'
+SOCKS_PORT="58077"                   # auth SOCKS5 (Slipstream)
+SOCKS_NOAUTH_PORT="58078"            # no-auth SOCKS5 (dnstt)
 
-CF_EMAIL="Aminkhodayari98.ak@gmail.com"
-CF_API_KEY="746c7c8e961788a2d97b27e59480832514be1"
-CF_ZONE_ID="925bc52d84999ca3707b716a8811a84c"
+# dnstm config location
+DNSTM_CONFIG="/etc/dnstm/config.json"
 
-# GitHub release base URL
+# GitHub release base for MasterDnsVPN
 MDNS_GH_BASE="https://github.com/masterking32/MasterDnsVPN/releases/latest/download"
 
 # ─── Helpers ────────────────────────────────────────────────
@@ -68,17 +77,41 @@ info()    { echo -e "\e[32m[+]\e[0m $*"; }
 warn()    { echo -e "\e[33m[!]\e[0m $*"; }
 error()   { echo -e "\e[31m[-]\e[0m $*"; exit 1; }
 section() { echo -e "\n\e[36m━━━ $* ━━━\e[0m"; }
-hr()      { echo "────────────────────────────────────────────"; }
+hr()      { echo "────────────────────────────────────────────────────"; }
+require() { command -v "$1" >/dev/null 2>&1 || error "Missing: $1. Install it first."; }
 
-require() { command -v "$1" >/dev/null 2>&1 || error "Missing command: $1. Install it first."; }
+install_deps() {
+    info "Installing dependencies..."
+    apt-get update -qq
+    apt-get install -y curl wget unzip python3 openssl 2>/dev/null || true
+}
 
-# ─── 1. Download MasterDnsVPN server binary ─────────────────
+# ─── Binaries from bin/ ──────────────────────────────────────
+install_bundled_binaries() {
+    section "Installing bundled binaries"
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local bin_dir="${script_dir}/bin"
+
+    for bin in dnstm microsocks slipstream-server dnstt-server; do
+        if [[ -f "${bin_dir}/${bin}" ]]; then
+            install -m 0755 "${bin_dir}/${bin}" "/usr/local/bin/${bin}"
+            info "Installed: ${bin}"
+        else
+            warn "Not found in bin/: ${bin} (skip)"
+        fi
+    done
+}
+
+# ════════════════════════════════════════════════════════════
+#  MASTERDNSVPN
+# ════════════════════════════════════════════════════════════
+
 download_masterdnsvpn() {
     section "Downloading MasterDnsVPN Server"
 
-    # Detect arch
-    local arch
-    arch=$(uname -m)
+    local arch; arch=$(uname -m)
     local asset
     case "$arch" in
         x86_64)  asset="MasterDnsVPN_Server_Linux_AMD64.tar.gz" ;;
@@ -86,45 +119,38 @@ download_masterdnsvpn() {
         *)        error "Unsupported architecture: $arch" ;;
     esac
 
-    # Try modern glibc first, fall back to legacy
-    local url="${MDNS_GH_BASE}/${asset}"
-    local url_legacy="${MDNS_GH_BASE}/${asset/Linux/Linux-Legacy}"
-
     mkdir -p "$MDNS_INSTALL_DIR"
     local tmp; tmp=$(mktemp -d)
 
     info "Downloading ${asset}..."
+    local url="${MDNS_GH_BASE}/${asset}"
     if ! wget -q "$url" -O "${tmp}/server.tar.gz"; then
-        warn "Modern glibc build failed — trying legacy build..."
+        warn "Modern glibc build failed — trying legacy..."
+        local url_legacy="${MDNS_GH_BASE}/${asset/Linux/Linux-Legacy}"
         wget -q "$url_legacy" -O "${tmp}/server.tar.gz" || error "Download failed"
-        asset="${asset/Linux/Linux-Legacy}"
     fi
 
     tar xf "${tmp}/server.tar.gz" -C "${tmp}"
     local bin; bin=$(find "${tmp}" -type f -name 'MasterDnsVPN_Server*' | head -1)
-    [[ -z "$bin" ]] && error "Could not find server binary in archive"
+    [[ -z "$bin" ]] && error "Server binary not found in archive"
 
     mv "$bin" "${MDNS_INSTALL_DIR}/MasterDnsVPN_Server"
     chmod +x "${MDNS_INSTALL_DIR}/MasterDnsVPN_Server"
     rm -rf "$tmp"
 
     local ver; ver=$("${MDNS_INSTALL_DIR}/MasterDnsVPN_Server" --version 2>/dev/null || echo "unknown")
-    info "Installed: ${ver}"
+    info "Installed MasterDnsVPN: ${ver}"
 }
 
-# ─── 2. Generate server config ───────────────────────────────
-write_server_config() {
-    section "Writing server_config.toml"
+write_masterdnsvpn_config() {
+    section "Writing MasterDnsVPN server_config.toml"
 
-    # Generate or reuse encrypt key
     local key_file="${MDNS_INSTALL_DIR}/encrypt_key.txt"
     local enc_key
     if [[ -f "$key_file" ]]; then
         enc_key=$(cat "$key_file")
         info "Reusing existing encrypt key."
     else
-        # MasterDnsVPN expects a key generated by the server — start it briefly to generate
-        # OR use a strong random hex string (32 bytes = 64 hex chars)
         enc_key=$(openssl rand -hex 32)
         echo "$enc_key" > "$key_file"
         chmod 600 "$key_file"
@@ -132,53 +158,45 @@ write_server_config() {
     fi
 
     cat > "${MDNS_INSTALL_DIR}/server_config.toml" << TOML
-# ==============================================================================
-# MasterDnsVPN Server Config — barzin.biz
+# ==============================================================
+# MasterDnsVPN Server Config
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# ==============================================================================
+# ==============================================================
 
-# ── DNS Listener ──────────────────────────────────────────────────────────────
-# Runs on port ${MDNS_PORT} (behind dnstm forward transport; not exposed on :53)
 UDP_HOST = "127.0.0.1"
 UDP_PORT = ${MDNS_PORT}
 
-# Domain for this tunnel (must match client DOMAINS setting)
 DOMAIN = ["${MDNS_DOMAIN}"]
 
-# ── Protocol ──────────────────────────────────────────────────────────────────
-# SOCKS5 mode: server handles SOCKS5 internally — no external proxy needed
-PROTOCOL_TYPE = "${MDNS_PROTOCOL}"
+# SOCKS5 built-in (no external microsocks needed)
+PROTOCOL_TYPE = "SOCKS5"
 USE_EXTERNAL_SOCKS5 = false
 FORWARD_IP = "127.0.0.1"
 FORWARD_PORT = 1080
 SOCKS5_AUTH = false
 SOCKS5_USER = "admin"
-SOCKS5_PASS = "123456"
+SOCKS5_PASS = "unused"
 SOCKS_HANDSHAKE_TIMEOUT = 120.0
 
-# ── Encryption ────────────────────────────────────────────────────────────────
 # 0=None 1=XOR 2=ChaCha20 3=AES-128-GCM 4=AES-192-GCM 5=AES-256-GCM
 DATA_ENCRYPTION_METHOD = ${MDNS_ENCRYPTION}
 
-# Compression (0=OFF 1=ZSTD 2=LZ4 3=ZLIB)
+# Compression: 0=OFF 1=ZSTD 2=LZ4 3=ZLIB
 SUPPORTED_UPLOAD_COMPRESSION_TYPES   = [0, 1, 2, 3]
 SUPPORTED_DOWNLOAD_COMPRESSION_TYPES = [0, 1, 2, 3]
 
-# ── ARQ / Reliability ─────────────────────────────────────────────────────────
-# Tuned for high-packet-loss networks (Iran ISP conditions)
-ARQ_WINDOW_SIZE        = 256
-ARQ_INITIAL_RTO        = 0.4
-ARQ_MAX_RTO            = 1.2
+# ARQ — tuned for high packet-loss (Iran ISP)
+ARQ_WINDOW_SIZE         = 256
+ARQ_INITIAL_RTO         = 0.4
+ARQ_MAX_RTO             = 1.2
 ARQ_CONTROL_INITIAL_RTO = 0.4
 ARQ_CONTROL_MAX_RTO     = 1.2
 ARQ_CONTROL_MAX_RETRIES = 200
 
-# ── Session ───────────────────────────────────────────────────────────────────
 SESSION_TIMEOUT          = 300
 SESSION_CLEANUP_INTERVAL = 30
 MAX_SESSIONS             = 255
 
-# ── Performance ───────────────────────────────────────────────────────────────
 MAX_CONCURRENT_REQUESTS = 500
 CPU_WORKER_THREADS      = 0
 MAX_PACKETS_PER_BATCH   = 1000
@@ -189,20 +207,16 @@ CONFIG_VERSION = 3.0
 TOML
 
     info "Config written → ${MDNS_INSTALL_DIR}/server_config.toml"
-    info "Encrypt key  → ${key_file}"
 }
 
-# ─── 3. Systemd service ──────────────────────────────────────
-install_systemd_service() {
+install_masterdnsvpn_service() {
     section "Installing masterdnsvpn.service"
-
     cat > /etc/systemd/system/masterdnsvpn.service << UNIT
 [Unit]
-Description=MasterDnsVPN Server — ${MDNS_DOMAIN}
+Description=MasterDnsVPN Server (${MDNS_DOMAIN})
 Documentation=https://github.com/masterking32/MasterDnsVPN
-After=network-online.target dnstm-dnsrouter.service
+After=network-online.target
 Wants=network-online.target
-BindsTo=dnstm-dnsrouter.service
 
 [Service]
 Type=simple
@@ -214,324 +228,447 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 LimitNOFILE=65536
-
-# Security
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=${MDNS_INSTALL_DIR}
-ProtectKernelTunables=yes
-ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    info "masterdnsvpn.service installed"
+}
+
+setup_masterdnsvpn() {
+    install_deps
+    download_masterdnsvpn
+    write_masterdnsvpn_config
+    install_masterdnsvpn_service
+    systemctl enable --now masterdnsvpn
+    sleep 2
+    systemctl is-active --quiet masterdnsvpn \
+        && info "masterdnsvpn ✓ running" \
+        || warn "masterdnsvpn not running — check: journalctl -u masterdnsvpn -n 30"
+}
+
+# ════════════════════════════════════════════════════════════
+#  SLIPSTREAM
+# ════════════════════════════════════════════════════════════
+
+setup_slipstream() {
+    section "Setting up Slipstream (${SLIP_DOMAIN})"
+
+    require slipstream-server
+    require microsocks
+
+    mkdir -p "$SLIP_CERT_DIR"
+
+    # Generate TLS cert for slipstream if not present
+    if [[ ! -f "${SLIP_CERT_DIR}/cert.pem" ]]; then
+        info "Generating self-signed cert for Slipstream..."
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+            -keyout "${SLIP_CERT_DIR}/key.pem" \
+            -out "${SLIP_CERT_DIR}/cert.pem" \
+            -days 3650 -nodes -subj "/CN=${SLIP_DOMAIN}" 2>/dev/null
+        chmod 600 "${SLIP_CERT_DIR}/key.pem"
+        info "Cert generated → ${SLIP_CERT_DIR}/cert.pem"
+    else
+        info "Reusing existing cert → ${SLIP_CERT_DIR}/cert.pem"
+    fi
+
+    # microsocks service (auth SOCKS5 — Slipstream backend)
+    cat > /etc/systemd/system/microsocks-slip.service << UNIT
+[Unit]
+Description=microsocks SOCKS5 — Slipstream backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/microsocks -p ${SOCKS_PORT} -u ${SOCKS_USER} -P ${SOCKS_PASS}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    # Slipstream server service
+    cat > /etc/systemd/system/dnstm-slip-socks.service << UNIT
+[Unit]
+Description=Slipstream DNS Tunnel (${SLIP_DOMAIN})
+After=network-online.target microsocks-slip.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/slipstream-server \\
+    --domain ${SLIP_DOMAIN} \\
+    --udp 127.0.0.1:${SLIP_PORT} \\
+    --cert ${SLIP_CERT_DIR}/cert.pem \\
+    --key  ${SLIP_CERT_DIR}/key.pem \\
+    --socks5 127.0.0.1:${SOCKS_PORT}
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
     systemctl daemon-reload
-    info "masterdnsvpn.service installed"
+    systemctl enable --now microsocks-slip
+    systemctl enable --now dnstm-slip-socks
+    sleep 2
+    systemctl is-active --quiet dnstm-slip-socks \
+        && info "Slipstream ✓ running" \
+        || warn "Slipstream not running — check: journalctl -u dnstm-slip-socks -n 30"
 }
 
-# ─── 4. Update dnstm config ──────────────────────────────────
-update_dnstm_config() {
-    section "Updating dnstm config (a.barzin.biz → forward → MasterDnsVPN)"
+# ════════════════════════════════════════════════════════════
+#  DNSTT
+# ════════════════════════════════════════════════════════════
 
-    local cfg="/etc/dnstm/config.json"
-    [[ -f "$cfg" ]] || error "dnstm config not found: $cfg"
+setup_dnstt() {
+    section "Setting up dnstt (${DNSTT_DOMAIN})"
 
-    # Backup
-    cp "$cfg" "${cfg}.bak-$(date +%Y%m%d%H%M%S)"
+    require dnstt-server
+    require microsocks
 
-    # Build new config: replace dnstt tunnel with forward transport to MasterDnsVPN
-    python3 - << PYEOF
-import json, sys
+    mkdir -p "$DNSTT_KEY_DIR"
 
-with open('$cfg') as f:
-    c = json.load(f)
-
-# Remove dnstt-socks tunnel and socks-noauth backend (NoizDNS legacy)
-c['tunnels'] = [t for t in c.get('tunnels', []) if t.get('transport') != 'dnstt']
-c['backends'] = [b for b in c.get('backends', []) if b.get('tag') != 'socks-noauth']
-
-# Add MasterDnsVPN forward tunnel (if not already present)
-tags = {t['tag'] for t in c.get('tunnels', [])}
-if 'mdns-forward' not in tags:
-    c['tunnels'].append({
-        "tag": "mdns-forward",
-        "enabled": True,
-        "transport": "forward",
-        "domain": "${MDNS_DOMAIN}",
-        "port": int("${MDNS_PORT}"),
-        "forward": {
-            "address": "127.0.0.1:${MDNS_PORT}"
-        }
-    })
-
-# Set route default to slip-socks (Slipstream) — keep Slipstream as primary
-c['route'] = {
-    "mode": "multi",
-    "active": "slip-socks",
-    "default": "slip-socks"
-}
-
-with open('$cfg', 'w') as f:
-    json.dump(c, f, indent=2)
-print("dnstm config updated")
-PYEOF
-
-    info "dnstm config updated → removed dnstt, added mdns-forward tunnel"
-}
-
-# ─── 5. Stop legacy NoizDNS services ─────────────────────────
-stop_legacy_services() {
-    section "Stopping legacy NoizDNS / dnstt services"
-
-    for svc in dnstm-dnstt-ssh microsocks-noauth; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            info "Stopping ${svc}..."
-            systemctl stop "$svc" || warn "Could not stop ${svc}"
-        fi
-        if systemctl is-enabled --quiet "$svc" 2>/dev/null; then
-            info "Disabling ${svc}..."
-            systemctl disable "$svc" || warn "Could not disable ${svc}"
-        fi
-    done
-
-    info "Legacy services stopped and disabled."
-}
-
-# ─── 6. Start / restart everything ───────────────────────────
-start_services() {
-    section "Starting services"
-
-    # Restart dnstm router first (picks up new config)
-    info "Restarting dnstm-dnsrouter..."
-    systemctl restart dnstm-dnsrouter || warn "dnstm-dnsrouter restart failed"
-
-    # Start MasterDnsVPN
-    info "Enabling & starting masterdnsvpn..."
-    systemctl enable --now masterdnsvpn
-
-    # Verify
-    sleep 3
-    if systemctl is-active --quiet masterdnsvpn; then
-        info "masterdnsvpn  ✓ running"
+    # Generate keypair if not present
+    if [[ ! -f "${DNSTT_KEY_DIR}/server.key" ]]; then
+        info "Generating dnstt keypair..."
+        dnstt-server -gen-key \
+            -privkey-file "${DNSTT_KEY_DIR}/server.key" \
+            -pubkey-file  "${DNSTT_KEY_DIR}/server.pub"
+        chmod 600 "${DNSTT_KEY_DIR}/server.key"
+        info "Keypair → ${DNSTT_KEY_DIR}/server.{key,pub}"
     else
-        warn "masterdnsvpn not running — check: journalctl -u masterdnsvpn -n 30"
+        info "Reusing existing dnstt keypair."
     fi
-    if systemctl is-active --quiet dnstm-dnsrouter; then
-        info "dnstm-dnsrouter ✓ running"
-    else
-        warn "dnstm-dnsrouter not running — check: journalctl -u dnstm-dnsrouter -n 30"
-    fi
+
+    local pubkey; pubkey=$(cat "${DNSTT_KEY_DIR}/server.pub")
+
+    # microsocks no-auth (dnstt backend)
+    cat > /etc/systemd/system/microsocks-noauth.service << UNIT
+[Unit]
+Description=microsocks SOCKS5 no-auth — dnstt backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/microsocks -p ${SOCKS_NOAUTH_PORT}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    # dnstt server service
+    cat > /etc/systemd/system/dnstm-dnstt.service << UNIT
+[Unit]
+Description=dnstt DNS Tunnel (${DNSTT_DOMAIN})
+After=network-online.target microsocks-noauth.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dnstt-server \\
+    -udp 127.0.0.1:${DNSTT_PORT} \\
+    -privkey-file ${DNSTT_KEY_DIR}/server.key \\
+    -tcp 127.0.0.1:${SOCKS_NOAUTH_PORT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    systemctl daemon-reload
+    systemctl enable --now microsocks-noauth
+    systemctl enable --now dnstm-dnstt
+    sleep 2
+    systemctl is-active --quiet dnstm-dnstt \
+        && info "dnstt ✓ running  (pubkey: ${pubkey})" \
+        || warn "dnstt not running — check: journalctl -u dnstm-dnstt -n 30"
 }
 
-# ─── 7. Print client config ──────────────────────────────────
-print_client_config() {
-    section "Client Configuration"
+# ════════════════════════════════════════════════════════════
+#  DNSTM — DNS ROUTER
+# ════════════════════════════════════════════════════════════
 
-    local key_file="${MDNS_INSTALL_DIR}/encrypt_key.txt"
-    local enc_key; enc_key=$(cat "$key_file" 2>/dev/null || echo "CHECK ${key_file}")
+setup_dnstm() {
+    section "Configuring dnstm DNS router"
 
-    hr
-    echo ""
-    echo "  MasterDnsVPN CLIENT CONFIG"
-    echo "  ─────────────────────────"
-    echo "  Binary : MasterDnsVPN_Client_*  (download from GitHub releases)"
-    echo "  GitHub : https://github.com/masterking32/MasterDnsVPN/releases/latest"
-    echo ""
-    echo "  ── client_config.toml ──────────────────────────────────────────"
-    cat << CLIENTCFG
+    require dnstm
 
-# SOCKS5 proxy listen address (your local machine)
-SOCKS5_HOST = "127.0.0.1"
-SOCKS5_PORT = 1080
+    mkdir -p /etc/dnstm
 
-# Tunnel domain
-DOMAINS = ["${MDNS_DOMAIN}"]
+    # Write full three-tunnel config
+    cat > "$DNSTM_CONFIG" << JSON
+{
+  "listen": "0.0.0.0:53",
+  "tunnels": [
+    {
+      "tag": "mdns-forward",
+      "enabled": true,
+      "transport": "forward",
+      "domain": "${MDNS_DOMAIN}",
+      "port": ${MDNS_PORT},
+      "forward": { "address": "127.0.0.1:${MDNS_PORT}" }
+    },
+    {
+      "tag": "slip-socks",
+      "enabled": true,
+      "transport": "slipstream",
+      "domain": "${SLIP_DOMAIN}",
+      "port": ${SLIP_PORT},
+      "cert": "${SLIP_CERT_DIR}/cert.pem",
+      "backend": "127.0.0.1:${SOCKS_PORT}"
+    },
+    {
+      "tag": "dnstt-tunnel",
+      "enabled": true,
+      "transport": "dnstt",
+      "domain": "${DNSTT_DOMAIN}",
+      "port": ${DNSTT_PORT},
+      "backend": "127.0.0.1:${SOCKS_NOAUTH_PORT}"
+    }
+  ],
+  "route": {
+    "mode": "multi"
+  }
+}
+JSON
 
-# Must match server DATA_ENCRYPTION_METHOD (2=ChaCha20)
-DATA_ENCRYPTION_METHOD = ${MDNS_ENCRYPTION}
+    # dnstm systemd service
+    cat > /etc/systemd/system/dnstm-dnsrouter.service << UNIT
+[Unit]
+Description=dnstm DNS Traffic Router
+After=network-online.target
+Wants=network-online.target
 
-# Encryption key — get from server: cat ${MDNS_INSTALL_DIR}/encrypt_key.txt
-ENCRYPT_KEY = "${enc_key}"
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dnstm -config ${DNSTM_CONFIG}
+Restart=always
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
-# DNS resolvers for tunnel traffic
-# Add more for load balancing / redundancy
-RESOLVERS_FILE = "client_resolvers.txt"
+[Install]
+WantedBy=multi-user.target
+UNIT
 
-# ARQ settings (match server)
-ARQ_WINDOW_SIZE  = 256
-ARQ_INITIAL_RTO  = 0.4
-ARQ_MAX_RTO      = 1.2
+    # Disable systemd-resolved on :53 if present
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        warn "Disabling systemd-resolved stub listener (conflicts with port 53)..."
+        mkdir -p /etc/systemd/resolved.conf.d
+        cat > /etc/systemd/resolved.conf.d/no-stub.conf << CONF
+[Resolve]
+DNSStubListener=no
+CONF
+        systemctl restart systemd-resolved
+    fi
 
-PROTOCOL_TYPE = "SOCKS5"
-LOG_LEVEL     = "INFO"
-
-CLIENTCFG
-    echo "  ─────────────────────────────────────────────────────────────────"
-    echo ""
-    echo "  IMPORTANT: Run the client auto-scan first to find optimal resolvers:"
-    echo "    ./MasterDnsVPN_Client --scan"
-    echo ""
-    echo "  Then start the tunnel:"
-    echo "    ./MasterDnsVPN_Client"
-    echo ""
-    echo "  Configure your device to use SOCKS5:"
-    echo "    Host: 127.0.0.1  Port: 1080"
-    echo ""
-    hr
+    systemctl daemon-reload
+    systemctl enable --now dnstm-dnsrouter
+    sleep 2
+    systemctl is-active --quiet dnstm-dnsrouter \
+        && info "dnstm-dnsrouter ✓ running on :53" \
+        || warn "dnstm-dnsrouter not running — check: journalctl -u dnstm-dnsrouter -n 30"
 }
 
-# ─── Status ──────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+#  FULL INSTALL
+# ════════════════════════════════════════════════════════════
+
+install_full() {
+    section "Full install: MasterDnsVPN + Slipstream + dnstt"
+    install_deps
+    install_bundled_binaries
+    setup_masterdnsvpn
+    setup_slipstream
+    setup_dnstt
+    setup_dnstm
+    print_client_configs
+}
+
+# ════════════════════════════════════════════════════════════
+#  STATUS
+# ════════════════════════════════════════════════════════════
+
 show_status() {
-    section "Tunnel Infrastructure Status"
-    local services=(masterdnsvpn dnstm-dnsrouter dnstm-slip-socks microsocks-slip-public microsocks)
-    for svc in "${services[@]}"; do
-        local state="stopped"
-        systemctl is-active --quiet "$svc" 2>/dev/null && state="running"
-        printf "  %-35s  %s\n" "$svc" "$([ "$state" = running ] && echo -e "\e[32m● running\e[0m" || echo -e "\e[31m○ stopped\e[0m")"
-    done
+    section "DNS Tunnel Kit — Service Status"
+
+    local services=(
+        "masterdnsvpn:MasterDnsVPN   (${MDNS_DOMAIN})"
+        "dnstm-slip-socks:Slipstream       (${SLIP_DOMAIN})"
+        "microsocks-slip:microsocks auth  (:${SOCKS_PORT})"
+        "dnstm-dnstt:dnstt            (${DNSTT_DOMAIN})"
+        "microsocks-noauth:microsocks noauth (:${SOCKS_NOAUTH_PORT})"
+        "dnstm-dnsrouter:dnstm DNS router  (:53)"
+    )
+
     echo ""
-    # Legacy services (should be stopped)
-    local legacy=(dnstm-dnstt-ssh microsocks-noauth)
-    for svc in "${legacy[@]}"; do
-        local state="stopped"
-        systemctl is-active --quiet "$svc" 2>/dev/null && state="running"
-        if [[ "$state" == "running" ]]; then
-            printf "  %-35s  \e[33m⚠ still running (legacy — should be stopped)\e[0m\n" "$svc"
+    for entry in "${services[@]}"; do
+        local svc="${entry%%:*}"
+        local label="${entry#*:}"
+        local running=false
+        systemctl is-active --quiet "$svc" 2>/dev/null && running=true
+        if $running; then
+            printf "  \e[32m●\e[0m %-22s  %s\n" "$svc" "$label"
+        else
+            printf "  \e[31m○\e[0m %-22s  %s\n" "$svc" "$label"
         fi
     done
+
     echo ""
-    # Port check
-    info "Port 53 listener:"
-    ss -lnup sport = :53 2>/dev/null | head -3 || true
-    info "Port ${MDNS_PORT} listener (MasterDnsVPN internal):"
-    ss -lnup sport = :"${MDNS_PORT}" 2>/dev/null | head -3 || true
+    info "Port :53 listener:"
+    ss -lnup sport = :53 2>/dev/null | grep -v Netid | head -3 || true
+    info "Port :${MDNS_PORT} listener (MasterDnsVPN):"
+    ss -lnup sport = :"${MDNS_PORT}" 2>/dev/null | grep -v Netid | head -3 || true
+    echo ""
 }
 
-# ─── Middle proxy (Iranian VPS) ───────────────────────────────
+# ════════════════════════════════════════════════════════════
+#  CLIENT CONFIGS
+# ════════════════════════════════════════════════════════════
+
+print_client_configs() {
+    section "Client Configurations"
+
+    # ── MasterDnsVPN ──
+    local mdns_key
+    mdns_key=$(cat "${MDNS_INSTALL_DIR}/encrypt_key.txt" 2>/dev/null || echo "RUN: cat ${MDNS_INSTALL_DIR}/encrypt_key.txt")
+
+    hr
+    echo ""
+    echo "  🔵 MasterDnsVPN (${MDNS_DOMAIN})"
+    echo "  Download client: https://github.com/masterking32/MasterDnsVPN/releases/latest"
+    echo ""
+    cat << CLIENTCFG
+  client_config.toml:
+  ───────────────────
+  SOCKS5_HOST = "127.0.0.1"
+  SOCKS5_PORT = 1080
+  DOMAINS = ["${MDNS_DOMAIN}"]
+  DATA_ENCRYPTION_METHOD = ${MDNS_ENCRYPTION}
+  ENCRYPT_KEY = "${mdns_key}"
+  ARQ_WINDOW_SIZE = 256
+  ARQ_INITIAL_RTO = 0.4
+  ARQ_MAX_RTO     = 1.2
+  PROTOCOL_TYPE = "SOCKS5"
+  LOG_LEVEL     = "INFO"
+CLIENTCFG
+
+    echo ""
+    echo "  Run: ./MasterDnsVPN_Client --scan   (find best resolvers)"
+    echo "       ./MasterDnsVPN_Client           (start tunnel)"
+    echo "  SOCKS5: 127.0.0.1:1080"
+
+    # ── Slipstream ──
+    echo ""
+    hr
+    echo ""
+    echo "  🟢 Slipstream (${SLIP_DOMAIN})"
+    echo "  Use SlipNet Android app with profile type: SLIPSTREAM_SSH"
+    echo ""
+    echo "  Profile settings:"
+    echo "    Domain    : ${SLIP_DOMAIN}"
+    echo "    Cert      : ${SLIP_CERT_DIR}/cert.pem  (copy to client)"
+    echo "    SOCKS5    : auth — user=${SOCKS_USER}  pass=<configured>"
+    echo ""
+
+    # ── dnstt ──
+    local dnstt_pub
+    dnstt_pub=$(cat "${DNSTT_KEY_DIR}/server.pub" 2>/dev/null || echo "RUN: cat ${DNSTT_KEY_DIR}/server.pub")
+
+    echo ""
+    hr
+    echo ""
+    echo "  🟡 dnstt (${DNSTT_DOMAIN})"
+    echo "  Compatible clients: dnstt-client, NoizDNS client, SlipNet (NoizDNS profile)"
+    echo ""
+    echo "  Client settings:"
+    echo "    DNS domain : ${DNSTT_DOMAIN}"
+    echo "    Public key : ${dnstt_pub}"
+    echo "    SOCKS5     : 127.0.0.1:1080  (no-auth)"
+    echo ""
+    echo "  dnstt-client command:"
+    echo "    ./dnstt-client -doh https://dns.google/dns-query \\"
+    echo "      -pubkey-file server.pub \\"
+    echo "      ${DNSTT_DOMAIN} 127.0.0.1:1080"
+    echo ""
+    hr
+    echo ""
+}
+
+# ════════════════════════════════════════════════════════════
+#  MIDDLE PROXY (Iranian VPS)
+# ════════════════════════════════════════════════════════════
+
 setup_middle_proxy() {
-    section "Setting up middle-proxy (dnsmasq DNS multiplexer)"
+    section "Middle-proxy (dnsmasq DNS multiplexer)"
     require dnsmasq
 
-    info "Configuring dnsmasq to forward *.barzin.biz → ${SERVER_IP}..."
     cat > /etc/dnsmasq.d/barzin-tunnel.conf << DNSCONF
-server=/a.barzin.biz/8.8.8.8
-server=/a.barzin.biz/1.1.1.1
-server=/a.barzin.biz/9.9.9.9
-server=/a.barzin.biz/8.8.4.4
-server=/a.barzin.biz/1.0.0.1
-server=/a.barzin.biz/208.67.222.222
-server=/b.barzin.biz/8.8.8.8
-server=/b.barzin.biz/1.1.1.1
-server=/b.barzin.biz/9.9.9.9
+server=/${MDNS_DOMAIN}/8.8.8.8
+server=/${MDNS_DOMAIN}/1.1.1.1
+server=/${MDNS_DOMAIN}/9.9.9.9
+server=/${SLIP_DOMAIN}/8.8.8.8
+server=/${SLIP_DOMAIN}/1.1.1.1
+server=/${SLIP_DOMAIN}/9.9.9.9
+server=/${DNSTT_DOMAIN}/8.8.8.8
+server=/${DNSTT_DOMAIN}/1.1.1.1
+server=/${DNSTT_DOMAIN}/9.9.9.9
 DNSCONF
 
     systemctl restart dnsmasq
-    info "dnsmasq middle-proxy configured."
-    info "Point SlipNet DNS to this VPS IP."
+    info "dnsmasq configured for all three tunnel domains."
+    info "Point clients' DNS to this VPS IP."
 }
 
-# ─── Full install ─────────────────────────────────────────────
-install_full() {
-    section "Full install: MasterDnsVPN + Slipstream + dnstm"
-    install_deps
-    download_masterdnsvpn
-    write_server_config
-    install_systemd_service
-    stop_legacy_services
-    update_dnstm_config
-    start_services
-    print_client_config
-}
+# ════════════════════════════════════════════════════════════
+#  MAIN
+# ════════════════════════════════════════════════════════════
 
-# ─── MasterDnsVPN only ────────────────────────────────────────
-install_masterdnsvpn_only() {
-    section "Installing MasterDnsVPN"
-    install_deps
-    download_masterdnsvpn
-    write_server_config
-    install_systemd_service
-    stop_legacy_services
-    update_dnstm_config
-    start_services
-    print_client_config
-}
-
-# ─── Migrate from NoizDNS ─────────────────────────────────────
-migrate_from_noizdns() {
-    section "Migrating from NoizDNS/dnstt → MasterDnsVPN"
-
-    warn "This will:"
-    warn "  1. Stop dnstm-dnstt-ssh (NoizDNS) permanently"
-    warn "  2. Stop microsocks-noauth"
-    warn "  3. Install MasterDnsVPN on ${MDNS_DOMAIN} port ${MDNS_PORT}"
-    warn "  4. Update dnstm to use 'forward' transport for ${MDNS_DOMAIN}"
-    echo ""
-    read -r -p "Continue? [y/N] " confirm
-    [[ "${confirm,,}" == "y" ]] || { info "Aborted."; exit 0; }
-
-    install_deps
-    download_masterdnsvpn
-    write_server_config
-    install_systemd_service
-    stop_legacy_services
-    update_dnstm_config
-    start_services
-    print_client_config
-
-    info "Migration complete. NoizDNS/dnstt has been replaced by MasterDnsVPN."
-    info "Update SlipNet client profiles: change NoizDNS domain to ${MDNS_DOMAIN}"
-    info "  Encryption key: cat ${MDNS_INSTALL_DIR}/encrypt_key.txt"
-}
-
-# ─── Update MasterDnsVPN ──────────────────────────────────────
-update_masterdnsvpn() {
-    section "Updating MasterDnsVPN to latest release"
-    systemctl stop masterdnsvpn 2>/dev/null || true
-    download_masterdnsvpn
-    systemctl start masterdnsvpn
-    info "MasterDnsVPN updated and restarted."
-    journalctl -u masterdnsvpn -n 5 --no-pager
-}
-
-# ─── Deps ─────────────────────────────────────────────────────
-install_deps() {
-    info "Installing dependencies..."
-    apt-get update -qq
-    apt-get install -y curl wget unzip python3 openssl 2>/dev/null || true
-}
-
-# ─── Main ─────────────────────────────────────────────────────
 MODE="${1:-help}"
 
 case "$MODE" in
-    install)             install_full ;;
-    masterdnsvpn)        install_masterdnsvpn_only ;;
-    masterdnsvpn-migrate)migrate_from_noizdns ;;
-    masterdnsvpn-update) update_masterdnsvpn ;;
-    status)              show_status ;;
-    middle-proxy)        setup_middle_proxy ;;
-    client-config)       print_client_config ;;
+    install)        install_full ;;
+    masterdnsvpn)   install_deps; setup_masterdnsvpn; print_client_configs ;;
+    slipstream)     install_deps; install_bundled_binaries; setup_slipstream ;;
+    dnstt)          install_deps; install_bundled_binaries; setup_dnstt; print_client_configs ;;
+    dnstm)          install_deps; install_bundled_binaries; setup_dnstm ;;
+    client-config)  print_client_configs ;;
+    status)         show_status ;;
+    middle-proxy)   setup_middle_proxy ;;
     *)
         echo ""
-        echo "  Barzin Tunnel Infrastructure Setup"
+        echo "  DNS Tunnel Kit"
+        echo "  Credits: https://github.com/mrvcoder"
         echo ""
         echo "  Usage:  $0 <mode>"
         echo ""
         echo "  Modes:"
-        echo "    install               Full setup (MasterDnsVPN + Slipstream + dnstm)"
-        echo "    masterdnsvpn          Install MasterDnsVPN only (+ update dnstm config)"
-        echo "    masterdnsvpn-migrate  Migrate from NoizDNS/dnstt → MasterDnsVPN"
-        echo "    masterdnsvpn-update   Update MasterDnsVPN binary to latest release"
-        echo "    status                Show all tunnel service status"
-        echo "    middle-proxy          Set up Iranian VPS DNS multiplexer (dnsmasq)"
-        echo "    client-config         Print client config for MasterDnsVPN"
+        printf "    %-22s  %s\n" "install"       "Full setup (MasterDnsVPN + Slipstream + dnstt + dnstm)"
+        printf "    %-22s  %s\n" "masterdnsvpn"  "Install / update MasterDnsVPN only"
+        printf "    %-22s  %s\n" "slipstream"    "Install Slipstream only"
+        printf "    %-22s  %s\n" "dnstt"         "Install dnstt only"
+        printf "    %-22s  %s\n" "dnstm"         "Install dnstm DNS router only"
+        printf "    %-22s  %s\n" "client-config" "Print client configs for all tunnels"
+        printf "    %-22s  %s\n" "status"        "Show all service status"
+        printf "    %-22s  %s\n" "middle-proxy"  "Set up Iranian VPS DNS multiplexer (dnsmasq)"
         echo ""
-        echo "  Tunnel domains:"
-        echo "    a.barzin.biz → MasterDnsVPN (DNS tunnel, built-in SOCKS5)"
-        echo "    b.barzin.biz → Slipstream   (DNS tunnel, SOCKS5 via microsocks)"
+        echo "  Tunnel domains (override with env vars):"
+        printf "    %-20s  %s\n" "MDNS_DOMAIN"  "${MDNS_DOMAIN}  (MasterDnsVPN)"
+        printf "    %-20s  %s\n" "SLIP_DOMAIN"  "${SLIP_DOMAIN}  (Slipstream)"
+        printf "    %-20s  %s\n" "DNSTT_DOMAIN" "${DNSTT_DOMAIN}  (dnstt)"
         echo ""
         ;;
 esac
