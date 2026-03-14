@@ -112,34 +112,70 @@ download_masterdnsvpn() {
     section "Downloading MasterDnsVPN Server"
 
     local arch; arch=$(uname -m)
-    local asset
+    local asset asset_legacy
     case "$arch" in
-        x86_64)  asset="MasterDnsVPN_Server_Linux_AMD64.tar.gz" ;;
-        aarch64) asset="MasterDnsVPN_Server_Linux_ARM64.tar.gz" ;;
-        *)        error "Unsupported architecture: $arch" ;;
+        x86_64)  asset="MasterDnsVPN_Server_Linux_AMD64.tar.gz"
+                 asset_legacy="MasterDnsVPN_Server_Linux-Legacy_AMD64.tar.gz" ;;
+        aarch64) asset="MasterDnsVPN_Server_Linux_ARM64.tar.gz"
+                 asset_legacy="MasterDnsVPN_Server_Linux-Legacy_ARM64.tar.gz" ;;
+        *)       error "Unsupported architecture: $arch" ;;
     esac
+
+    # Resolve exact download URL from GitHub API (avoids redirect chains that cause hangs)
+    info "Fetching latest release info from GitHub..."
+    local api_url="https://api.github.com/repos/masterking32/MasterDnsVPN/releases/latest"
+    local release_json
+    release_json=$(curl -sf --connect-timeout 15 --max-time 30 \
+        -H "Accept: application/vnd.github+json" \
+        "$api_url") || { warn "GitHub API unreachable — falling back to latest/download URL"; release_json=""; }
+
+    get_asset_url() {
+        local name="$1"
+        if [[ -n "$release_json" ]]; then
+            echo "$release_json" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for a in d.get('assets',[]):
+    if a['name'] == '${name}':
+        print(a['browser_download_url'])
+        break
+" 2>/dev/null
+        fi
+    }
+
+    local url; url=$(get_asset_url "$asset")
+    [[ -z "$url" ]] && url="${MDNS_GH_BASE}/${asset}"
 
     mkdir -p "$MDNS_INSTALL_DIR"
     local tmp; tmp=$(mktemp -d)
 
-    info "Downloading ${asset}..."
-    local url="${MDNS_GH_BASE}/${asset}"
-    if ! wget -q "$url" -O "${tmp}/server.tar.gz"; then
-        warn "Modern glibc build failed — trying legacy..."
-        local url_legacy="${MDNS_GH_BASE}/${asset/Linux/Linux-Legacy}"
-        wget -q "$url_legacy" -O "${tmp}/server.tar.gz" || error "Download failed"
+    info "Downloading ${asset} (~42MB)..."
+    # curl with progress bar, 10-min timeout, 3 retries, follow redirects
+    if ! curl -L --retry 3 --retry-delay 3 \
+              --connect-timeout 30 --max-time 600 \
+              --progress-bar \
+              -o "${tmp}/server.tar.gz" "$url"; then
+        warn "Modern glibc build failed — trying legacy build..."
+        local url_legacy; url_legacy=$(get_asset_url "$asset_legacy")
+        [[ -z "$url_legacy" ]] && url_legacy="${MDNS_GH_BASE}/${asset_legacy}"
+        curl -L --retry 3 --retry-delay 3 \
+             --connect-timeout 30 --max-time 600 \
+             --progress-bar \
+             -o "${tmp}/server.tar.gz" "$url_legacy" \
+             || { rm -rf "$tmp"; error "Download failed for both modern and legacy builds"; }
     fi
 
+    info "Extracting..."
     tar xf "${tmp}/server.tar.gz" -C "${tmp}"
-    local bin; bin=$(find "${tmp}" -type f -name 'MasterDnsVPN_Server*' | head -1)
+    local bin; bin=$(find "${tmp}" -type f -name 'MasterDnsVPN_Server' ! -name '*.gz' ! -name '*.zip' | head -1)
     [[ -z "$bin" ]] && error "Server binary not found in archive"
 
     mv "$bin" "${MDNS_INSTALL_DIR}/MasterDnsVPN_Server"
     chmod +x "${MDNS_INSTALL_DIR}/MasterDnsVPN_Server"
     rm -rf "$tmp"
 
-    local ver; ver=$("${MDNS_INSTALL_DIR}/MasterDnsVPN_Server" --version 2>/dev/null || echo "unknown")
-    info "Installed MasterDnsVPN: ${ver}"
+    local size; size=$(du -sh "${MDNS_INSTALL_DIR}/MasterDnsVPN_Server" | cut -f1)
+    info "MasterDnsVPN installed: ${MDNS_INSTALL_DIR}/MasterDnsVPN_Server (${size})"
 }
 
 write_masterdnsvpn_config() {
