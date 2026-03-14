@@ -17,32 +17,49 @@
 #  Architecture (server):
 #    dnstm DNS router → UDP :53
 #      ├─ a.barzin.biz  → forward  → MasterDnsVPN   :5312  (built-in SOCKS5 + ChaCha20)
-#      ├─ b.barzin.biz  → slipstream → microsocks    :58077 (auth SOCKS5)
-#      └─ c.barzin.biz  → dnstt    → microsocks-noauth :58078 (no-auth SOCKS5)
+#      ├─ b.barzin.biz  → slipstream → microsocks    :58077 (SOCKS5, auth if TUNNEL_USER set)
+#      └─ c.barzin.biz  → dnstt    → microsocks      :58077/:58078 (auth or no-auth)
 #
 #  MasterDnsVPN:
-#    Domain  : a.barzin.biz
-#    Port    : UDP 5312 (internal, behind dnstm)
+#    Domain    : a.barzin.biz
+#    Port      : UDP 5312 (internal, behind dnstm)
 #    Encryption: ChaCha20 (method 2)
-#    SOCKS5  : built-in — no external microsocks needed
-#    Binary  : downloaded from GitHub releases on install
+#    SOCKS5    : built-in — SOCKS5_AUTH enabled when TUNNEL_USER is set
+#    Binary    : downloaded from GitHub releases on install
 #
 #  Slipstream:
 #    Domain  : b.barzin.biz
 #    Port    : 5310 (internal, behind dnstm)
-#    SOCKS5  : microsocks :58077 (auth: see SOCKS_USER/SOCKS_PASS)
+#    SOCKS5  : microsocks :58077 (auth: TUNNEL_USER/TUNNEL_PASS or defaults)
 #
 #  dnstt:
 #    Domain  : c.barzin.biz
 #    Port    : 5311 (internal, behind dnstm)
-#    SOCKS5  : microsocks-noauth :58078 (no-auth)
+#    SOCKS5  : auth(:58077) if TUNNEL_USER set, else no-auth(:58078)
 #    Keys    : /opt/dnstt/server.key + server.pub
+#
+#  ── Setting credentials ──────────────────────────────────
+#  Pass TUNNEL_USER + TUNNEL_PASS as env vars to require auth
+#  on ALL three tunnels:
+#
+#    sudo TUNNEL_USER=alice TUNNEL_PASS=s3cr3t bash setup.sh install
+#
+#  Without them, tunnels run with default/no-auth credentials.
 # ============================================================
 
 set -euo pipefail
 
 # ─── Config ─────────────────────────────────────────────────
 SERVER_IP="138.124.115.113"
+
+# ── Tunnel credentials (override via env vars) ────────────────
+# Set TUNNEL_USER + TUNNEL_PASS to require auth on ALL tunnels.
+# Leave empty for no-auth (open proxy — not recommended).
+#
+#   sudo TUNNEL_USER=myuser TUNNEL_PASS=mypass bash setup.sh install
+#
+TUNNEL_USER="${TUNNEL_USER:-}"
+TUNNEL_PASS="${TUNNEL_PASS:-}"
 
 # MasterDnsVPN
 MDNS_DOMAIN="${MDNS_DOMAIN:-a.barzin.biz}"
@@ -60,11 +77,11 @@ DNSTT_DOMAIN="${DNSTT_DOMAIN:-c.barzin.biz}"
 DNSTT_PORT="5311"
 DNSTT_KEY_DIR="/opt/dnstt"
 
-# Shared SOCKS5 (Slipstream backend)
-SOCKS_USER="barzin"
-SOCKS_PASS='FFbCXFUlIwmjOBG!I5'
-SOCKS_PORT="58077"                   # auth SOCKS5 (Slipstream)
-SOCKS_NOAUTH_PORT="58078"            # no-auth SOCKS5 (dnstt)
+# Shared SOCKS5 backends — inherit from TUNNEL_USER/PASS if set
+SOCKS_USER="${TUNNEL_USER:-barzin}"
+SOCKS_PASS="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+SOCKS_PORT="58077"                   # auth SOCKS5 (Slipstream + dnstt when creds set)
+SOCKS_NOAUTH_PORT="58078"            # no-auth SOCKS5 (dnstt fallback when no creds)
 
 # dnstm config location
 DNSTM_CONFIG="/etc/dnstm/config.json"
@@ -211,9 +228,9 @@ PROTOCOL_TYPE = "SOCKS5"
 USE_EXTERNAL_SOCKS5 = false
 FORWARD_IP = "127.0.0.1"
 FORWARD_PORT = 1080
-SOCKS5_AUTH = false
-SOCKS5_USER = "admin"
-SOCKS5_PASS = "unused"
+SOCKS5_AUTH = $([ -n "${TUNNEL_USER}" ] && echo "true" || echo "false")
+SOCKS5_USER = "${TUNNEL_USER:-admin}"
+SOCKS5_PASS = "${TUNNEL_PASS:-unused}"
 SOCKS_HANDSHAKE_TIMEOUT = 120.0
 
 # 0=None 1=XOR 2=ChaCha20 3=AES-128-GCM 4=AES-192-GCM 5=AES-256-GCM
@@ -390,8 +407,30 @@ setup_dnstt() {
 
     local pubkey; pubkey=$(cat "${DNSTT_KEY_DIR}/server.pub")
 
-    # microsocks no-auth (dnstt backend)
-    cat > /etc/systemd/system/microsocks-noauth.service << UNIT
+    # microsocks for dnstt backend (auth or no-auth based on TUNNEL_USER)
+    local dnstt_socks_port
+    if [[ -n "${TUNNEL_USER}" ]]; then
+        dnstt_socks_port="${SOCKS_PORT}"
+        info "Credentials set — dnstt backend will use auth microsocks (:${SOCKS_PORT})"
+        cat > /etc/systemd/system/microsocks-noauth.service << UNIT
+[Unit]
+Description=microsocks SOCKS5 (auth) — dnstt backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/microsocks -p ${SOCKS_PORT} -u ${TUNNEL_USER} -P ${TUNNEL_PASS}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    else
+        dnstt_socks_port="${SOCKS_NOAUTH_PORT}"
+        info "No credentials set — dnstt backend will use no-auth microsocks (:${SOCKS_NOAUTH_PORT})"
+        cat > /etc/systemd/system/microsocks-noauth.service << UNIT
 [Unit]
 Description=microsocks SOCKS5 no-auth — dnstt backend
 After=network-online.target
@@ -406,6 +445,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
+    fi
 
     # dnstt server service
     # Note: dnstt-server uses positional args: DOMAIN UPSTREAMADDR (no -tcp flag)
@@ -420,7 +460,7 @@ Type=simple
 ExecStart=/usr/local/bin/dnstt-server \\
     -udp 127.0.0.1:${DNSTT_PORT} \\
     -privkey-file ${DNSTT_KEY_DIR}/server.key \\
-    ${DNSTT_DOMAIN} 127.0.0.1:${SOCKS_NOAUTH_PORT}
+    ${DNSTT_DOMAIN} 127.0.0.1:${dnstt_socks_port}
 Restart=always
 RestartSec=5
 
@@ -600,11 +640,20 @@ print_client_configs() {
     echo "  🔵 MasterDnsVPN (${MDNS_DOMAIN})"
     echo "  Download client: https://github.com/masterking32/MasterDnsVPN/releases/latest"
     echo ""
+    # Credential hint for MasterDnsVPN client config
+    local mdns_auth_lines=""
+    if [[ -n "${TUNNEL_USER}" ]]; then
+        mdns_auth_lines="  SOCKS5_AUTH = true
+  SOCKS5_USER = \"${TUNNEL_USER}\"
+  SOCKS5_PASS = \"${TUNNEL_PASS}\""
+    fi
+
     cat << CLIENTCFG
   client_config.toml:
   ───────────────────
   SOCKS5_HOST = "127.0.0.1"
   SOCKS5_PORT = 1080
+${mdns_auth_lines}
   DOMAINS = ["${MDNS_DOMAIN}"]
   DATA_ENCRYPTION_METHOD = ${MDNS_ENCRYPTION}
   ENCRYPT_KEY = "${mdns_key}"
@@ -618,7 +667,11 @@ CLIENTCFG
     echo ""
     echo "  Run: ./MasterDnsVPN_Client --scan   (find best resolvers)"
     echo "       ./MasterDnsVPN_Client           (start tunnel)"
-    echo "  SOCKS5: 127.0.0.1:1080"
+    if [[ -n "${TUNNEL_USER}" ]]; then
+        echo "  SOCKS5: 127.0.0.1:1080  user=${TUNNEL_USER}  pass=${TUNNEL_PASS}"
+    else
+        echo "  SOCKS5: 127.0.0.1:1080  (no auth)"
+    fi
 
     # ── Slipstream ──
     echo ""
@@ -630,7 +683,11 @@ CLIENTCFG
     echo "  Profile settings:"
     echo "    Domain    : ${SLIP_DOMAIN}"
     echo "    Cert      : ${SLIP_CERT_DIR}/cert.pem  (copy to client)"
-    echo "    SOCKS5    : auth — user=${SOCKS_USER}  pass=<configured>"
+    if [[ -n "${TUNNEL_USER}" ]]; then
+        echo "    SOCKS5    : 127.0.0.1:1080  user=${TUNNEL_USER}  pass=${TUNNEL_PASS}"
+    else
+        echo "    SOCKS5    : 127.0.0.1:1080  (no auth)"
+    fi
     echo ""
 
     # ── dnstt ──
@@ -646,7 +703,11 @@ CLIENTCFG
     echo "  Client settings:"
     echo "    DNS domain : ${DNSTT_DOMAIN}"
     echo "    Public key : ${dnstt_pub}"
-    echo "    SOCKS5     : 127.0.0.1:1080  (no-auth)"
+    if [[ -n "${TUNNEL_USER}" ]]; then
+        echo "    SOCKS5     : 127.0.0.1:1080  user=${TUNNEL_USER}  pass=${TUNNEL_PASS}"
+    else
+        echo "    SOCKS5     : 127.0.0.1:1080  (no auth)"
+    fi
     echo ""
     echo "  dnstt-client command:"
     echo "    ./dnstt-client -doh https://dns.google/dns-query \\"
