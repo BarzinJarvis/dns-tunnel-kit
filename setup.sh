@@ -167,7 +167,9 @@ for a in d.get('assets',[]):
 
     info "Extracting..."
     tar xf "${tmp}/server.tar.gz" -C "${tmp}"
-    local bin; bin=$(find "${tmp}" -type f -name 'MasterDnsVPN_Server' ! -name '*.gz' ! -name '*.zip' | head -1)
+    # Binary has version suffix e.g. MasterDnsVPN_Server_Linux_AMD64_v2026.03.14...
+    local bin; bin=$(find "${tmp}" -type f -name 'MasterDnsVPN_Server*' \
+        ! -name '*.gz' ! -name '*.zip' ! -name '*.toml' ! -name '*.txt' | head -1)
     [[ -z "$bin" ]] && error "Server binary not found in archive"
 
     mv "$bin" "${MDNS_INSTALL_DIR}/MasterDnsVPN_Server"
