@@ -542,10 +542,11 @@ install_full() {
 show_status() {
     section "DNS Tunnel Kit — Service Status"
 
+    # Format: "svc1|svc2_alias:Label"  (aliases separated by |, checked in order)
     local services=(
         "masterdnsvpn:MasterDnsVPN   (${MDNS_DOMAIN})"
         "dnstm-slip-socks:Slipstream       (${SLIP_DOMAIN})"
-        "microsocks-slip:microsocks auth  (:${SOCKS_PORT})"
+        "microsocks-slip|microsocks-slip-public|microsocks:microsocks auth  (:${SOCKS_PORT})"
         "dnstm-dnstt:dnstt            (${DNSTT_DOMAIN})"
         "microsocks-noauth:microsocks noauth (:${SOCKS_NOAUTH_PORT})"
         "dnstm-dnsrouter:dnstm DNS router  (:53)"
@@ -553,14 +554,23 @@ show_status() {
 
     echo ""
     for entry in "${services[@]}"; do
-        local svc="${entry%%:*}"
+        local svcs="${entry%%:*}"
         local label="${entry#*:}"
         local running=false
-        systemctl is-active --quiet "$svc" 2>/dev/null && running=true
+        local active_svc="$svcs"
+        # Try each alias (pipe-separated) until one is found active
+        IFS='|' read -ra svc_list <<< "$svcs"
+        for s in "${svc_list[@]}"; do
+            if systemctl is-active --quiet "$s" 2>/dev/null; then
+                running=true
+                active_svc="$s"
+                break
+            fi
+        done
         if $running; then
-            printf "  \e[32m●\e[0m %-22s  %s\n" "$svc" "$label"
+            printf "  \e[32m●\e[0m %-32s  %s\n" "$active_svc" "$label"
         else
-            printf "  \e[31m○\e[0m %-22s  %s\n" "$svc" "$label"
+            printf "  \e[31m○\e[0m %-32s  %s\n" "${svc_list[0]}" "$label"
         fi
     done
 
