@@ -381,11 +381,12 @@ After=network-online.target microsocks-slip.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/slipstream-server \\
-    --domain ${SLIP_DOMAIN} \\
-    --udp 127.0.0.1:${SLIP_PORT} \\
-    --cert ${SLIP_CERT_DIR}/cert.pem \\
-    --key  ${SLIP_CERT_DIR}/key.pem \\
-    --socks5 127.0.0.1:${SOCKS_PORT}
+    -d ${SLIP_DOMAIN} \\
+    --dns-listen-host 127.0.0.1 \\
+    --dns-listen-port ${SLIP_PORT} \\
+    -c ${SLIP_CERT_DIR}/cert.pem \\
+    -k ${SLIP_CERT_DIR}/key.pem \\
+    -a 127.0.0.1:${SOCKS_PORT}
 Restart=always
 RestartSec=5
 
