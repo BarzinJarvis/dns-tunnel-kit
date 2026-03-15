@@ -344,6 +344,15 @@ setup_slipstream() {
     require microsocks
 
     mkdir -p "$SLIP_CERT_DIR"
+    # Generate or load reset-seed (32 hex chars = 16 bytes — must persist across reinstalls)
+    local seed_file="${SLIP_CERT_DIR}/reset-seed"
+    if [[ -f "$seed_file" ]]; then
+        SLIP_RESET_SEED="$(cat "$seed_file")"
+    else
+        SLIP_RESET_SEED="$(openssl rand -hex 16)"
+        echo "$SLIP_RESET_SEED" > "$seed_file"
+        chmod 600 "$seed_file"
+    fi
     if [[ ! -f "${SLIP_CERT_DIR}/cert.pem" ]]; then
         info "Generating self-signed TLS cert..."
         openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
@@ -386,7 +395,9 @@ ExecStart=/usr/local/bin/slipstream-server \\
     --dns-listen-port ${SLIP_PORT} \\
     -c ${SLIP_CERT_DIR}/cert.pem \\
     -k ${SLIP_CERT_DIR}/key.pem \\
-    -a 127.0.0.1:${SOCKS_PORT}
+    -a 127.0.0.1:${SOCKS_PORT} \\
+    --reset-seed ${SLIP_RESET_SEED} \\
+    --idle-timeout-seconds 1200
 Restart=always
 RestartSec=5
 
