@@ -13,17 +13,17 @@ Bypass DNS-based internet censorship using **three independent DNS tunnel method
   Client (Iran)             │  Frankfurt Server :53               │
   ─────────────             │                                     │
   MasterDnsVPN client  ───▶ │  dnstm DNS Router                   │
-  SlipNet (Slipstream) ───▶ │    ├─ a.barzin.biz → MasterDnsVPN :5312  (ChaCha20 + SOCKS5)
-  dnstt-client         ───▶ │    ├─ b.barzin.biz → Slipstream   :5310  → microsocks :58077
-                            │    └─ c.barzin.biz → dnstt        :5311  → microsocks :58078
+  SlipNet (Slipstream) ───▶ │    ├─ a.yourdomain.com → MasterDnsVPN :5312  (ChaCha20 + SOCKS5)
+  dnstt-client         ───▶ │    ├─ b.yourdomain.com → Slipstream   :5310  → microsocks :58077
+                            │    └─ c.yourdomain.com → dnstt        :5311  → microsocks :58078
                             └─────────────────────────────────────┘
 ```
 
 | Tunnel | Domain | Protocol | Encryption | SOCKS5 |
 |---|---|---|---|---|
-| **MasterDnsVPN** | `a.barzin.biz` | Custom DNS + ARQ | ChaCha20 | built-in |
-| **Slipstream** | `b.barzin.biz` | DNS → SSH | via SSH | microsocks (auth) |
-| **dnstt** | `c.barzin.biz` | DNS TXT encoding | none | microsocks (no-auth) |
+| **MasterDnsVPN** | `a.yourdomain.com` | Custom DNS + ARQ | ChaCha20 | built-in |
+| **Slipstream** | `b.yourdomain.com` | DNS → SSH | via SSH | microsocks (auth) |
+| **dnstt** | `c.yourdomain.com` | DNS TXT encoding | none | microsocks (no-auth) |
 
 All three run simultaneously on the same server, each on a different subdomain.
 
@@ -94,7 +94,7 @@ setup.sh middle-proxy    Set up Iranian VPS DNS multiplexer (dnsmasq)
 
 ## 📱 Client Setup
 
-### 🔵 MasterDnsVPN (`a.barzin.biz`)
+### 🔵 MasterDnsVPN (`a.yourdomain.com`)
 
 1. Download client: [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases/latest)
 2. Get your encryption key from the server: `cat /opt/masterdnsvpn/encrypt_key.txt`
@@ -104,7 +104,7 @@ setup.sh middle-proxy    Set up Iranian VPS DNS multiplexer (dnsmasq)
 SOCKS5_HOST = "127.0.0.1"
 SOCKS5_PORT = 1080
 
-DOMAINS = ["a.barzin.biz"]
+DOMAINS = ["a.yourdomain.com"]
 DATA_ENCRYPTION_METHOD = 2   # 2 = ChaCha20
 ENCRYPT_KEY = "<your-key>"
 
@@ -126,19 +126,19 @@ LOG_LEVEL     = "INFO"
 
 ---
 
-### 🟢 Slipstream (`b.barzin.biz`)
+### 🟢 Slipstream (`b.yourdomain.com`)
 
 Use [SlipNet Android app](https://github.com/BarzinJarvis/SlipNet) with profile:
 
 | Setting | Value |
 |---|---|
 | Type | `SLIPSTREAM_SSH` |
-| Domain | `b.barzin.biz` |
+| Domain | `b.yourdomain.com` |
 | Cert | copy `/etc/dnstm/tunnels/slip-socks/cert.pem` from server |
 
 ---
 
-### 🟡 dnstt (`c.barzin.biz`)
+### 🟡 dnstt (`c.yourdomain.com`)
 
 Compatible clients: `dnstt-client`, NoizDNS client, SlipNet (NoizDNS profile type).
 
@@ -149,7 +149,7 @@ Compatible clients: `dnstt-client`, NoizDNS client, SlipNet (NoizDNS profile typ
 ./dnstt-client \
   -doh https://dns.google/dns-query \
   -pubkey-file server.pub \
-  c.barzin.biz 127.0.0.1:1080
+  c.yourdomain.com 127.0.0.1:1080
 ```
 
 3. SOCKS5 proxy at `127.0.0.1:1080` (no auth required)
@@ -195,14 +195,14 @@ Each tunnel domain needs NS records pointing to the Frankfurt server.
 Add these DNS records at your registrar / Cloudflare:
 
 ```
-a.barzin.biz  NS  ns1.a.barzin.biz
-ns1.a.barzin.biz  A  138.124.115.113
+a.yourdomain.com  NS  ns1.a.yourdomain.com
+ns1.a.yourdomain.com  A  YOUR_SERVER_IP
 
-b.barzin.biz  NS  ns1.b.barzin.biz
-ns1.b.barzin.biz  A  138.124.115.113
+b.yourdomain.com  NS  ns1.b.yourdomain.com
+ns1.b.yourdomain.com  A  YOUR_SERVER_IP
 
-c.barzin.biz  NS  ns1.c.barzin.biz
-ns1.c.barzin.biz  A  138.124.115.113
+c.yourdomain.com  NS  ns1.c.yourdomain.com
+ns1.c.yourdomain.com  A  YOUR_SERVER_IP
 ```
 
 ---

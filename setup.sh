@@ -364,8 +364,8 @@ setup_slipstream() {
         info "Reusing existing cert."
     fi
 
-    local slip_user="${TUNNEL_USER:-barzin}"
-    local slip_pass="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+    local slip_user="${TUNNEL_USER:-changeme}"
+    local slip_pass="${TUNNEL_PASS:-changeme123}"
 
     cat > /etc/systemd/system/microsocks-slip.service << UNIT
 [Unit]
@@ -755,8 +755,8 @@ wizard_collect_inputs() {
     fi
 
     # Update derived vars
-    SOCKS_USER="${TUNNEL_USER:-barzin}"
-    SOCKS_PASS="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+    SOCKS_USER="${TUNNEL_USER:-changeme}"
+    SOCKS_PASS="${TUNNEL_PASS:-changeme123}"
 
     # ── Confirmation ──────────────────────────────────────
     echo ""
@@ -870,8 +870,8 @@ update_credentials_menu() {
         fi
     fi
 
-    SOCKS_USER="${TUNNEL_USER:-barzin}"
-    SOCKS_PASS="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+    SOCKS_USER="${TUNNEL_USER:-changeme}"
+    SOCKS_PASS="${TUNNEL_PASS:-changeme123}"
 
     echo ""
     if ask_yn "Apply credentials and restart tunnel services?" "y"; then
@@ -882,8 +882,8 @@ update_credentials_menu() {
         fi
 
         # Rewrite microsocks-slip (Slipstream backend)
-        local slip_user="${TUNNEL_USER:-barzin}"
-        local slip_pass="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+        local slip_user="${TUNNEL_USER:-changeme}"
+        local slip_pass="${TUNNEL_PASS:-changeme123}"
         if systemctl is-enabled microsocks-slip &>/dev/null; then
             sed -i "s|ExecStart=.*microsocks.*-p ${SOCKS_PORT}.*|ExecStart=/usr/local/bin/microsocks -p ${SOCKS_PORT} -u ${slip_user} -P ${slip_pass}|" \
                 /etc/systemd/system/microsocks-slip.service 2>/dev/null || true
@@ -992,8 +992,8 @@ main_menu() {
                 ask MDNS_DOMAIN  "MasterDnsVPN domain" "${MDNS_DOMAIN}"
                 ask TUNNEL_USER  "SOCKS5 username (empty=no-auth)" ""
                 [[ -n "$TUNNEL_USER" ]] && ask_pass TUNNEL_PASS "SOCKS5 password"
-                SOCKS_USER="${TUNNEL_USER:-barzin}"
-                SOCKS_PASS="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+                SOCKS_USER="${TUNNEL_USER:-changeme}"
+                SOCKS_PASS="${TUNNEL_PASS:-changeme123}"
                 install_deps
                 setup_masterdnsvpn
                 print_client_configs
@@ -1005,8 +1005,8 @@ main_menu() {
                 ask SLIP_DOMAIN  "Slipstream domain" "${SLIP_DOMAIN}"
                 ask TUNNEL_USER  "SOCKS5 username (empty=no-auth)" ""
                 [[ -n "$TUNNEL_USER" ]] && ask_pass TUNNEL_PASS "SOCKS5 password"
-                SOCKS_USER="${TUNNEL_USER:-barzin}"
-                SOCKS_PASS="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+                SOCKS_USER="${TUNNEL_USER:-changeme}"
+                SOCKS_PASS="${TUNNEL_PASS:-changeme123}"
                 install_deps
                 install_bundled_binaries
                 setup_slipstream
@@ -1018,8 +1018,8 @@ main_menu() {
                 ask DNSTT_DOMAIN "dnstt domain" "${DNSTT_DOMAIN}"
                 ask TUNNEL_USER  "SOCKS5 username (empty=no-auth)" ""
                 [[ -n "$TUNNEL_USER" ]] && ask_pass TUNNEL_PASS "SOCKS5 password"
-                SOCKS_USER="${TUNNEL_USER:-barzin}"
-                SOCKS_PASS="${TUNNEL_PASS:-FFbCXFUlIwmjOBG!I5}"
+                SOCKS_USER="${TUNNEL_USER:-changeme}"
+                SOCKS_PASS="${TUNNEL_PASS:-changeme123}"
                 install_deps
                 install_bundled_binaries
                 setup_dnstt
